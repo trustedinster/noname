@@ -7,6 +7,7 @@ import type { Socket } from "socket.io";
 import { SgsLiteHost } from "./sgs-lite";
 import { modeFor } from "./modes";
 import { LIMITS, type RoomState, type RoomSummary } from "./protocol";
+import { APP_VERSION } from "../../../src/lib/version";
 
 interface Member {
   id: string;
@@ -151,7 +152,7 @@ export class Lobby {
             player = { id: socket.id, name, socket, roomId: null };
             this.players.set(socket.id, player);
             clearTimeout(helloTimer);
-            socket.emit("ack", { seq: msg.seq, ok: true, d: { id: socket.id, name } });
+            socket.emit("ack", { seq: msg.seq, ok: true, d: { id: socket.id, name, serverVersion: APP_VERSION } });
             socket.emit("evt", { t: "lobby.state", d: { rooms: this.roomSummaries(), online: this.players.size } });
             break;
           }

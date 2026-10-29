@@ -1,6 +1,6 @@
 {
   "name": "agentmore",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "scripts": {
     "dev": "NODE_ENV=development tsx server.ts --dev 2>&1 | tee dev.log",

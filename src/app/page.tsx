@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { NonameClient, type Evt } from '@/lib/noname-client';
+import { APP_VERSION, APP_BUILD_NOTE } from '@/lib/version';
 
 /* ---------- 类型（与服务端协议 v1.1 对应） ---------- */
 
@@ -120,6 +121,10 @@ export default function Page() {
   const api = useCallback(async (t: string, d?: unknown) => {
     try { return await clientRef.current!.request(t, d); }
     catch (e: any) { setErr(e.message ?? String(e)); throw e; }
+  }, []);
+
+  useEffect(() => {
+    console.log(`%c[noname] 前端版本：v${APP_VERSION}（${APP_BUILD_NOTE}）`, 'color:#fbbf24;font-weight:bold');
   }, []);
 
   useEffect(() => {
@@ -238,9 +243,16 @@ export default function Page() {
           <Card className="bg-stone-900/85 border-amber-900/50 backdrop-blur">
             <CardHeader><CardTitle className="text-amber-500 font-serif tracking-widest text-center text-2xl">无名杀</CardTitle></CardHeader>
             <CardContent className="space-y-4">
+              <p className="text-center text-[10px] text-stone-500 -mt-2">v{APP_VERSION}</p>
               <Input value={nickname} maxLength={12} onChange={e => setNickname(e.target.value)} placeholder="取名（12 字内）" className="bg-stone-950 border-stone-700" />
               <Button className="w-full bg-amber-600 hover:bg-amber-500 font-bold tracking-widest" disabled={!nickname.trim()}
-                onClick={async () => { try { const d = await api('hello', { name: nickname.trim() }); setMe(d); } catch {} }}>
+                onClick={async () => {
+                  try {
+                    const d = await api('hello', { name: nickname.trim() });
+                    if (d?.serverVersion) console.log(`%c[noname] 后端版本：v${d.serverVersion}`, 'color:#fbbf24;font-weight:bold');
+                    setMe(d);
+                  } catch {}
+                }}>
                 入 座
               </Button>
               {err && <p className="text-red-400 text-xs text-center">{err}</p>}

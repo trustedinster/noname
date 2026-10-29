@@ -12,6 +12,7 @@ import { createServer } from "http";
 import next from "next";
 import { Server } from "socket.io";
 import { Lobby } from "./mini-services/noname-server/src/lobby";
+import { APP_VERSION } from "./src/lib/version";
 
 const dev = process.argv.includes("--dev");
 const port = Number(process.env.PORT) || 3000;
@@ -39,7 +40,7 @@ async function main() {
 
   httpServer.listen(port, () => {
     console.log(
-      `[noname] 单进程运行于 :${port}（Next 页面 + socket.io /socket.io），dev=${dev}`,
+      `[noname] v${APP_VERSION} 单进程运行于 :${port}（Next 页面 + socket.io /socket.io），dev=${dev}`,
     );
   });
 
