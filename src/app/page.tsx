@@ -22,7 +22,6 @@ type PlayerBrief = {
   hp: number; maxHp: number; handCount: number; dead: boolean;
   dist: number; inRange: boolean; equip: EquipView[];
 };
-type TurnPhase = 'prepare' | 'judgment' | 'draw' | 'play' | 'discard' | 'finish';
 type GameState = {
   players: PlayerBrief[];
   turnSeat: number;
@@ -35,550 +34,439 @@ type GameState = {
   discardCount: number;
   winner: string | null;
 };
+type TurnPhase = 'prepare' | 'judgment' | 'draw' | 'play' | 'discard' | 'finish';
+type Seat = { id: string; name: string };
+
+/* ---------- 大厅 API 信封 ---------- */
+
+type RoomSummary = { id: string; name: string; game: string; players: number; max: number; started: boolean; over: boolean };
 type RoomState = { id: string; name: string; game: string; members: { id: string; name: string; ready: boolean }[]; started: boolean; over: boolean };
-type RoomSummary = { id: string; name: string; players: number; max: number; started: boolean; over: boolean };
 
-/* ---------- 牌面视觉 ---------- */
-
-const SUIT_SYM: Record<Suit, string> = { spade: '♠', heart: '♥', club: '♣', diamond: '♦' };
-const SUIT_IS_RED: Record<Suit, boolean> = { spade: false, heart: true, club: false, diamond: true };
+const SUIT_CHAR: Record<Suit, string> = { spade: '♠', heart: '♥', club: '♣', diamond: '♦' };
+const isRed = (s: Suit) => s === 'heart' || s === 'diamond';
 const RANK_LABEL = (r: number) => (r === 1 ? 'A' : r === 11 ? 'J' : r === 12 ? 'Q' : r === 13 ? 'K' : String(r));
+const PHASE_LABEL: Record<TurnPhase, string> = { prepare: '准备', judgment: '判定', draw: '摸牌', play: '出牌', discard: '弃牌', finish: '结束' };
+const EQUIP_ICON: Record<EquipSlot, string> = { weapon: '⚔', armor: '🛡', 'horse+': '＋马', 'horse-': '－马' };
 
-/** 牌面底色：按花色红黑分，装备金边 */
-function cardFaceClass(c: { kind: CardKind; suit: Suit }) {
-  const isEquip = ['bagua', 'qinglong', 'fangtian', 'liannu', 'horse_plus', 'horse_minus'].includes(c.kind);
-  if (isEquip) return 'bg-gradient-to-b from-yellow-900/90 to-yellow-950 border-yellow-600/80 text-yellow-50';
-  if (c.kind === 'sha') return SUIT_IS_RED[c.suit]
-    ? 'bg-gradient-to-b from-red-800/90 to-red-950 border-red-600 text-red-50'
-    : 'bg-gradient-to-b from-zinc-700/90 to-zinc-900 border-zinc-500 text-zinc-50';
-  if (c.kind === 'shan') return 'bg-gradient-to-b from-slate-600/80 to-slate-900 border-slate-400 text-slate-50';
-  if (c.kind === 'tao') return 'bg-gradient-to-b from-pink-800/90 to-pink-950 border-pink-600 text-pink-50';
-  return 'bg-gradient-to-b from-amber-800/90 to-amber-950 border-amber-600 text-amber-50'; // 酒
+/* ---------- 牌面（原版风格：纸底 + 角标花色点数 + 竖排牌名） ---------- */
+
+function CardFace({ card, selected, onClick }: { card: Card; selected?: boolean; onClick?: () => void }) {
+  const red = isRed(card.suit);
+  return (
+    <button
+      onClick={onClick}
+      className={`playing-card relative w-[76px] h-[110px] shrink-0 rounded-lg border shadow-lg select-none transition-all duration-150 ${red ? 'text-red-700' : 'text-stone-900'} ${
+        selected ? '-translate-y-5 ring-2 ring-amber-400 shadow-amber-500/40' : 'hover:-translate-y-2'
+      }`}
+    >
+      <span className="absolute top-0.5 left-1.5 text-[13px] leading-tight font-bold font-serif">
+        {RANK_LABEL(card.rank)}
+        <span className="block text-[12px]">{SUIT_CHAR[card.suit]}</span>
+      </span>
+      <span className="absolute inset-0 flex items-center justify-center">
+        <span className="writing-vertical font-serif font-bold text-[17px] tracking-widest">{card.name}</span>
+      </span>
+      <span className="absolute bottom-1 right-1.5 text-[11px] opacity-70">{SUIT_CHAR[card.suit]}</span>
+    </button>
+  );
 }
 
-const EQUIP_ICON: Record<EquipSlot, string> = { weapon: '⚔', armor: '🛡', 'horse+': '🛡＋马', 'horse-': '⚔－马' };
-const EQUIP_BADGE: Record<EquipSlot, string> = { weapon: '⚔', armor: '🛡', 'horse+': '＋', 'horse-': '－' };
+/* ---------- 勾玉体力 ---------- */
 
-const PHASES: { key: TurnPhase; label: string }[] = [
-  { key: 'prepare', label: '准备' },
-  { key: 'judgment', label: '判定' },
-  { key: 'draw', label: '摸牌' },
-  { key: 'play', label: '出牌' },
-  { key: 'discard', label: '弃牌' },
-  { key: 'finish', label: '结束' },
-];
-
-/* ---------- 页面 ---------- */
+function HpGems({ hp, maxHp }: { hp: number; maxHp: number }) {
+  return (
+    <div className="flex gap-0.5 flex-wrap">
+      {Array.from({ length: maxHp }, (_, i) => (
+        <span key={i} className={`w-2.5 h-2.5 rounded-full border ${i < hp ? 'bg-amber-400 border-amber-200 shadow-[0_0_4px_rgba(251,191,36,.8)]' : 'bg-stone-700 border-stone-600'}`} />
+      ))}
+    </div>
+  );
+}
 
 export default function Page() {
-  const [phase, setPhase] = useState<'gate' | 'lobby' | 'room'>('gate');
-  const [nameInput, setNameInput] = useState('');
-  const [me, setMe] = useState<{ id: string; name: string } | null>(null);
-  const [err, setErr] = useState('');
-  const [rooms, setRooms] = useState<RoomSummary[]>([]);
-  const [online, setOnline] = useState(0);
+  const clientRef = useRef<NonameClient | null>(null);
+  const [connected, setConnected] = useState(false);
+  const [nickname, setNickname] = useState('');
   const [roomName, setRoomName] = useState('');
+  const [me, setMe] = useState<Seat | null>(null);
+  const [rooms, setRooms] = useState<RoomSummary[]>([]);
   const [room, setRoom] = useState<RoomState | null>(null);
   const [game, setGame] = useState<GameState | null>(null);
   const [hand, setHand] = useState<Card[]>([]);
-  const [logs, setLogs] = useState<{ text: string; ts: number }[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
   const [chat, setChat] = useState<{ from: string; text: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
+  const [showLogs, setShowLogs] = useState(true);
   const [selected, setSelected] = useState<{ cardId: number; targetSeat: number | null } | null>(null);
-  const [now, setNow] = useState(Date.now());
-  const clientRef = useRef<NonameClient | null>(null);
-  const nameRef = useRef('无名玩家');
-  const myId = me?.id ?? '';
+  const [respondCard, setRespondCard] = useState<number | null>(null);
+  const [err, setErr] = useState('');
 
-  /* ---------- 连接与事件分发 ---------- */
+  const api = useCallback(async (t: string, d?: unknown) => {
+    try { return await clientRef.current!.request(t, d); }
+    catch (e: any) { setErr(e.message ?? String(e)); throw e; }
+  }, []);
+
   useEffect(() => {
-    if (phase === 'gate') return;
+    if (clientRef.current) return;
     const c = new NonameClient();
     clientRef.current = c;
-    let alive = true;
-
-    c.connect()
-      .then(async () => {
-        if (!alive) return;
-        try {
-          const d = await c.request('hello', { name: nameRef.current });
-          setMe(d);
-        } catch (e: any) {
-          setErr(e.message ?? '连接失败');
-          setPhase('gate');
-        }
-      })
-      .catch(() => {
-        setErr('联机服务不可达');
-        setPhase('gate');
-      });
-
-    const off = c.onEvt((e: Evt) => {
+    c.onEvt((e: Evt) => {
       switch (e.t) {
-        case 'lobby.state': setRooms(e.d.rooms); setOnline(e.d.online); break;
-        case 'room.joined': setRoom(e.d); setPhase('room'); setLogs([]); setChat([]); setGame(null); setHand([]); break;
-        case 'room.state': setRoom(e.d); break;
-        case 'room.chat': setChat(prev => [...prev.slice(-80), e.d]); break;
-        case 'game.start': setLogs([]); setSelected(null); break;
-        case 'game.log': setLogs(prev => [...prev.slice(-200), e.d]); break;
+        case 'room.list': setRooms(e.d.rooms ?? []); break;
+        case 'room.state': setRoom(e.d.room); break;
+        case 'room.chat': setChat(prev => [...prev.slice(-60), { from: e.d.from, text: e.d.text }]); break;
+        case 'game.log': setLogs(prev => [...prev.slice(-80), e.d.text]); break;
+        case 'game.start':
         case 'game.state': setGame(e.d); break;
         case 'game.state.private': setHand(e.d.hand); break;
-        case 'game.over': setGame(e.d.state ?? null); break;
+        case 'game.over': setGame((g: any) => ({ ...g, phase: 'over', winner: e.d.winner })); break;
+        case 'room.kicked': setRoom(null); setGame(null); setHand([]); break;
       }
     });
+    c.connect().then(() => { setConnected(true); c.request('room.list').catch(() => {}); }).catch(() => setErr('连接失败'));
+    return () => { c.close(); clientRef.current = null; };
+  }, []);
 
-    return () => { alive = false; off(); c.close(); clientRef.current = null; };
-  }, [phase === 'gate']);
+  const seatByPlayerId = useCallback((id: string) =>
+    game?.players.find(p => p.id === id)?.seat ?? -1, [game]);
 
-  /* 大厅轮询刷新 */
-  useEffect(() => {
-    if (phase !== 'lobby' || !clientRef.current?.connected) return;
-    const tick = () => clientRef.current?.request('lobby.refresh').then(d => {
-      setRooms(d.rooms); setOnline(d.online);
-    }).catch(() => {});
-    tick();
-    const iv = setInterval(tick, 3000);
-    return () => clearInterval(iv);
-  }, [phase, me]);
+  const mySeat = me ? seatByPlayerId(me.id) : -1;
+  const mySelf = game?.players.find(p => p.seat === mySeat) ?? null;
+  const opponents = useMemo(() => {
+    if (!game || mySeat < 0) return [];
+    // 从自己顺时针（下一家）开始排
+    const ordered: PlayerBrief[] = [];
+    for (let i = 1; i < game.players.length; i++) {
+      const s = (mySeat + i) % game.players.length;
+      const p = game.players.find(x => x.seat === s);
+      if (p) ordered.push(p);
+    }
+    return ordered;
+  }, [game, mySeat]);
 
-  /* 计时器（响应倒计时） */
-  useEffect(() => {
-    if (!game?.prompt) return;
-    const iv = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(iv);
-  }, [game?.prompt?.until]);
+  const isMyTurn = game?.phase === 'play' && game.turnSeat === mySeat && game.turnPhase === 'play' && !mySelf?.dead;
+  const myPrompt = game?.prompt && game.prompt.seat === mySeat ? game.prompt : null;
+  const turnPlayer = game?.players.find(p => p.seat === game.turnSeat) ?? null;
 
-  /* ---------- 操作 ---------- */
-  const api = useCallback((t: string, d?: unknown) => clientRef.current?.request(t, d), []);
-
-  const enterLobby = async () => {
-    setErr('');
-    nameRef.current = nameInput.trim() || '无名玩家';
-    setPhase('lobby');
-  };
-
-  const createRoom = async () => {
-    try {
-      await api('room.create', { name: roomName.trim() || `${me?.name}的房间` });
-      setRoomName('');
-    } catch (e: any) { setErr(e.message); }
-  };
-
-  const joinRoom = async (roomId: string) => {
-    try { await api('room.join', { roomId }); } catch (e: any) { setErr(e.message); }
-  };
-
-  const leaveRoom = async () => {
-    await api('room.leave');
-    setRoom(null); setGame(null); setHand([]); setPhase('lobby');
-  };
-
-  const toggleReady = () => {
-    const m = room?.members.find(x => x.id === myId);
-    api('room.ready', { ready: !(m?.ready ?? false) });
-  };
-
-  const sendChat = () => {
-    const text = chatInput.trim();
-    if (!text) return;
-    api('room.chat', { text });
+  const sendChat = async () => {
+    if (!chatInput.trim()) return;
+    try { await api('room.chat', { text: chatInput.trim() }); } catch {}
     setChatInput('');
   };
 
-  const me_ = game?.players.find(p => p.id === myId);
-  const mySeat = me_?.seat ?? -1;
-  const isMyTurn = game?.phase === 'play' && game.turnPhase === 'play' && game.turnSeat === mySeat && !me_?.dead;
-  const myPrompt = game?.prompt && game.prompt.seat === mySeat ? game.prompt : null;
-  const promptLeft = myPrompt ? Math.max(0, Math.ceil((myPrompt.until - now) / 1000)) : 0;
-
-  const playCard = async () => {
+  const playSelected = async () => {
     if (!selected) return;
-    try {
-      await api('game.action', { type: 'play', data: { cardId: selected.cardId, targetSeat: selected.targetSeat } });
-      setSelected(null);
-    } catch {}
+    try { await api('game.action', { type: 'play', data: { cardId: selected.cardId, targetSeat: selected.targetSeat } }); }
+    catch {}
+    setSelected(null);
   };
 
   const respond = async (cardId: number | null) => {
     try { await api('game.action', { type: 'respond', data: { cardId } }); } catch {}
+    setRespondCard(null);
   };
 
-  const selectedCard = selected ? hand.find(c => c.id === selected.cardId) : undefined;
-  const isSha = selectedCard?.kind === 'sha';
+  const endTurn = async () => { setSelected(null); try { await api('game.action', { type: 'end' }); } catch {} };
 
-  const canPlaySelected = useMemo(() => {
-    if (!selectedCard || !game || !isMyTurn) return false;
-    if (isSha) return (!game.shaUsed || me_?.equip.some(e => e.kind === 'liannu')) && selected?.targetSeat !== null;
-    if (selectedCard.kind === 'tao') return (me_?.hp ?? 0) < (me_?.maxHp ?? 0);
-    if (selectedCard.kind === 'shan') return false;
-    return true; // 酒 / 装备
-  }, [selectedCard, game, isMyTurn, isSha, selected, me_]);
+  const canPlayNow = (card: Card) => {
+    if (!isMyTurn) return false;
+    if (['shan'].includes(card.kind)) return false;
+    if (['bagua', 'qinglong', 'fangtian', 'liannu', 'horse_plus', 'horse_minus'].includes(card.kind)) return true;
+    if (card.kind === 'sha') return !!game && (!game.shaUsed || (mySelf?.equip.some(e => e.kind === 'liannu') ?? false));
+    if (card.kind === 'tao') return (mySelf?.hp ?? 0) < (mySelf?.maxHp ?? 0);
+    if (card.kind === 'jiu') return !!game && !game.wineUsed;
+    return true;
+  };
 
-  /* ---------- 视图 ---------- */
+  const handleHandClick = (card: Card) => {
+    if (myPrompt) {
+      const ok = card.kind === myPrompt.type || (myPrompt.type === 'tao' && myPrompt.dyingSeat === mySeat && card.kind === 'jiu');
+      if (ok) respond(card.id);
+      return;
+    }
+    if (!canPlayNow(card)) return;
+    if (['bagua', 'qinglong', 'fangtian', 'liannu', 'horse_plus', 'horse_minus', 'tao', 'jiu'].includes(card.kind)) {
+      playDirect(card.id);
+      return;
+    }
+    setSelected(s => (s?.cardId === card.id ? null : { cardId: card.id, targetSeat: null }));
+  };
 
-  if (phase === 'gate') {
+  const playDirect = async (cardId: number) => {
+    try { await api('game.action', { type: 'play', data: { cardId } }); } catch {}
+  };
+
+  /* ================= 入场 ================= */
+  if (!connected) {
     return (
-      <main className="min-h-screen bg-stone-950 text-stone-100 flex items-center justify-center p-4 bg-[radial-gradient(ellipse_at_top,rgba(180,120,40,0.14),transparent_60%)]">
-        <Card className="w-full max-w-sm bg-stone-900/90 border-stone-800 backdrop-blur">
-          <CardHeader>
-            <CardTitle className="text-amber-400 text-xl tracking-wide">无名杀 · 联机</CardTitle>
-            <p className="text-sm text-stone-400">服务端权威 · 协议 v1.1</p>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Input
-              placeholder="昵称（最多 12 字）" maxLength={12} value={nameInput}
-              onChange={e => setNameInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && nameInput.trim() && enterLobby()}
-              className="bg-stone-950 border-stone-700"
-            />
-            {err && <p className="text-sm text-red-400">{err}</p>}
-            <Button
-              className="w-full bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold"
-              disabled={!nameInput.trim()} onClick={enterLobby}
-            >
-              进入大厅
-            </Button>
-          </CardContent>
-        </Card>
-      </main>
-    );
-  }
-
-  if (phase === 'lobby') {
-    return (
-      <main className="min-h-screen bg-stone-950 text-stone-100 bg-[radial-gradient(ellipse_at_top,rgba(180,120,40,0.10),transparent_55%)]">
-        <div className="mx-auto max-w-2xl p-4 space-y-4">
-          <header className="flex items-center justify-between flex-wrap gap-2">
-            <h1 className="text-xl font-semibold text-amber-400">房间列表</h1>
-            <div className="flex items-center gap-2 text-sm text-stone-400">
-              <span>{me?.name ?? nameRef.current}</span><span>·</span><span>在线 {online}</span>
-            </div>
-          </header>
-
-          <div className="flex gap-2">
-            <Input
-              placeholder="新房间名" maxLength={20} value={roomName}
-              onChange={e => setRoomName(e.target.value)}
-              className="bg-stone-900 border-stone-700"
-            />
-            <Button className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold shrink-0" onClick={createRoom}>
-              创建房间
-            </Button>
-          </div>
-          {err && <p className="text-sm text-red-400">{err}</p>}
-
-          <ScrollArea className="h-[60vh]">
-            <div className="space-y-2 pr-2">
-              {rooms.length === 0 && (
-                <p className="text-stone-500 text-sm py-8 text-center">还没有房间，创建一个吧</p>
-              )}
-              {rooms.map(r => (
-                <div key={r.id} className="flex items-center justify-between bg-stone-900/90 border border-stone-800 rounded-lg px-4 py-3">
-                  <div>
-                    <p className="font-medium">{r.name}</p>
-                    <p className="text-xs text-stone-400">{r.players}/{r.max} 人 · {r.started ? '对局中' : '等待中'}</p>
-                  </div>
-                  <Button variant="outline" className="border-stone-700 hover:bg-stone-800" onClick={() => joinRoom(r.id)}>
-                    进入
-                  </Button>
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
+      <main className="relative min-h-screen flex items-center justify-center bg-stone-950">
+        <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-40" />
+        <div className="relative text-center">
+          <h1 className="text-4xl font-serif font-bold text-amber-500 tracking-[.3em] mb-3">无名杀</h1>
+          <p className="text-stone-400 text-sm mb-8 tracking-widest">{err || '正在连接服务器…'}</p>
+          {err && <Button onClick={() => location.reload()} variant="outline" className="border-amber-700 text-amber-400">重试</Button>}
         </div>
       </main>
     );
   }
 
-  /* ---------- 房间 ---------- */
-  const members = room?.members ?? [];
-  const allReady = members.length >= 2 && members.every(m => m.ready);
-  const showTable = game && game.players.length >= 2;
+  /* ================= 入座 ================= */
+  if (!me) {
+    return (
+      <main className="relative min-h-screen flex items-center justify-center bg-stone-950">
+        <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-40" />
+        <div className="relative w-[320px]">
+          <Card className="bg-stone-900/85 border-amber-900/50 backdrop-blur">
+            <CardHeader><CardTitle className="text-amber-500 font-serif tracking-widest text-center text-2xl">无名杀</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <Input value={nickname} maxLength={12} onChange={e => setNickname(e.target.value)} placeholder="取名（12 字内）" className="bg-stone-950 border-stone-700" />
+              <Button className="w-full bg-amber-600 hover:bg-amber-500 font-bold tracking-widest" disabled={!nickname.trim()}
+                onClick={async () => { try { const d = await api('hello', { name: nickname.trim() }); setMe(d); } catch {} }}>
+                入 座
+              </Button>
+              {err && <p className="text-red-400 text-xs text-center">{err}</p>}
+            </CardContent>
+          </Card>
+        </div>
+      </main>
+    );
+  }
 
-  /* 对手按座位顺时针排列（从我的下家开始），视觉成环 */
-  const others = useMemo(() => {
-    if (!game) return [];
-    const list = game.players.filter(p => p.seat !== mySeat && p.seat >= 0);
-    const sorted = [...list].sort((a, b) => a.seat - b.seat);
-    const idx = sorted.findIndex(p => p.seat > mySeat);
-    const rotated = idx >= 0 ? [...sorted.slice(idx), ...sorted.slice(0, idx)] : sorted;
-    return rotated.filter(p => p.seat >= 0);
-  }, [game, mySeat]);
+  /* ================= 大厅 ================= */
+  if (!room) {
+    return (
+      <main className="relative min-h-screen bg-stone-950">
+        <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-20" />
+        <div className="relative max-w-2xl mx-auto px-4 py-10">
+          <div className="flex items-baseline justify-between mb-6">
+            <h1 className="text-2xl font-serif font-bold text-amber-500 tracking-widest">无名杀 · 大厅</h1>
+            <span className="text-stone-500 text-sm">{me.name}</span>
+          </div>
+          <div className="flex gap-2 mb-6">
+            <Input value={roomName} maxLength={20} onChange={e => setRoomName(e.target.value)} placeholder="新房名" className="bg-stone-900 border-stone-700" />
+            <Button className="bg-amber-600 hover:bg-amber-500 shrink-0" disabled={!roomName.trim()}
+              onClick={async () => { try { const d = await api('room.create', { name: roomName.trim() }); setRoomName(''); if (d?.roomId) await api('room.join', { roomId: d.roomId }); } catch {} }}>
+              建房
+            </Button>
+            <Button variant="outline" className="border-stone-700 shrink-0" onClick={() => api('room.list').catch(() => {})}>刷新</Button>
+          </div>
+          <div className="space-y-2">
+            {rooms.length === 0 && <p className="text-stone-600 text-sm py-8 text-center">暂无房间，建一个吧</p>}
+            {rooms.map(r => (
+              <div key={r.id} className="flex items-center justify-between rounded-lg border border-stone-700/80 bg-stone-900/80 px-4 py-3 backdrop-blur">
+                <div>
+                  <p className="text-stone-200 font-bold">{r.name}</p>
+                  <p className="text-stone-500 text-xs">{r.game} · {r.players}/{r.max} 人 · {r.started ? (r.over ? '已结束' : '对局中') : '等待中'}</p>
+                </div>
+                <Button size="sm" variant="outline" className="border-amber-700 text-amber-400" disabled={r.started && !r.over}
+                  onClick={async () => { try { await api('room.join', { roomId: r.id }); } catch {} }}>
+                  {r.started && !r.over ? '观战中' : '加入'}
+                </Button>
+              </div>
+            ))}
+          </div>
+          {err && <p className="text-red-400 text-xs mt-4">{err}</p>}
+        </div>
+      </main>
+    );
+  }
 
-  return (
-    <main className="min-h-screen text-stone-100 bg-stone-950 bg-[radial-gradient(ellipse_at_center,rgba(120,80,30,0.16),transparent_65%)]">
-      <div className="mx-auto max-w-5xl p-3 sm:p-4 space-y-3">
-        <header className="flex items-center justify-between flex-wrap gap-2">
-          <h1 className="text-lg font-semibold text-amber-400">{room?.name}</h1>
-          <div className="flex items-center gap-3">
-            {showTable && (
-              <span className="text-xs text-stone-400">
-                牌堆 <b className="text-stone-200">{game!.deckCount}</b> · 弃牌 {game!.discardCount}
-              </span>
-            )}
-            <Button variant="outline" className="border-stone-700 hover:bg-stone-800" onClick={leaveRoom}>
-              离开房间
+  /* ================= 房间（未开局） ================= */
+  if (!room.started || !game) {
+    return (
+      <main className="relative min-h-screen bg-stone-950">
+        <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-20" />
+        <div className="relative max-w-xl mx-auto px-4 py-10">
+          <h1 className="text-2xl font-serif font-bold text-amber-500 tracking-widest mb-1">{room.name}</h1>
+          <p className="text-stone-500 text-sm mb-6">{room.game} · {room.members.length} 人</p>
+          <div className="space-y-2 mb-6">
+            {room.members.map(m => (
+              <div key={m.id} className="flex items-center justify-between rounded-lg border border-stone-700/80 bg-stone-900/80 px-4 py-3">
+                <span className="text-stone-200">{m.name}{m.id === me.id && <span className="text-stone-500 text-xs ml-2">（你）</span>}</span>
+                <span className={m.ready ? 'text-emerald-400 text-sm' : 'text-stone-500 text-sm'}>{m.ready ? '已准备' : '未准备'}</span>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" className="border-stone-700" onClick={async () => { try { await api('room.leave'); setRoom(null); } catch {} }}>离开</Button>
+            <Button className="bg-amber-600 hover:bg-amber-500 ml-auto"
+              onClick={async () => { try { const d = await api('room.ready', { ready: !room.members.find(m => m.id === me.id)?.ready }); } catch {} }}>
+              切换准备
             </Button>
           </div>
-        </header>
+          {err && <p className="text-red-400 text-xs mt-4">{err}</p>}
+        </div>
+      </main>
+    );
+  }
 
-        {/* 成员 / 准备区 */}
-        {!showTable && (
-          <Card className="bg-stone-900/90 border-stone-800">
-            <CardContent className="p-4 space-y-3">
-              <div className="space-y-2">
-                {members.map(m => (
-                  <div key={m.id} className="flex items-center justify-between text-sm">
-                    <span>{m.name}{m.id === myId && <span className="text-stone-500">（你）</span>}</span>
-                    <span className={m.ready ? 'text-emerald-400' : 'text-stone-500'}>{m.ready ? '已准备' : '未准备'}</span>
-                  </div>
-                ))}
+  /* ================= 对局（原版布局） ================= */
+  const over = game.phase === 'over';
+  return (
+    <main className="fixed inset-0 overflow-hidden bg-stone-950 select-none">
+      {/* 背景 */}
+      <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center" />
+      <div className="absolute inset-0 bg-black/45" />
+
+      {/* 左上：战报 */}
+      <div className={`absolute top-2 left-2 z-20 w-52 md:w-64 transition-all ${showLogs ? '' : '-translate-x-[calc(100%-2.5rem)]'}`}>
+        <div className="rounded-lg border border-amber-900/40 bg-black/60 backdrop-blur">
+          <button className="w-full text-left px-3 py-1.5 text-xs text-amber-600 font-bold" onClick={() => setShowLogs(v => !v)}>
+            ⚔ 战报 {showLogs ? '◂' : '▸'}
+          </button>
+          {showLogs && (
+            <ScrollArea className="h-40 md:h-56 px-3 pb-2">
+              <div className="text-[11px] leading-5 text-stone-300 space-y-0.5">
+                {logs.slice(-40).map((l, i) => <p key={i}>{l}</p>)}
               </div>
-              <p className="text-xs text-stone-500">
-                {members.length < 2 ? '至少 2 人才能开局，把链接发给朋友吧' : allReady ? '即将开局…' : '全员准备后自动开局'}
-              </p>
-              <Button className="w-full bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold" onClick={toggleReady}>
-                {members.find(m => m.id === myId)?.ready ? '取消准备' : '准备'}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 牌桌 */}
-        {showTable && (
-          <div className="space-y-3">
-            {/* 阶段指示条 */}
-            <div className="flex items-center justify-center gap-1 sm:gap-2 flex-wrap text-[11px] sm:text-xs">
-              {PHASES.map((ph, i) => {
-                const active = game!.phase === 'play' && game!.turnPhase === ph.key;
-                return (
-                  <span key={ph.key} className="flex items-center gap-1 sm:gap-2">
-                    {i > 0 && <span className="text-stone-700">→</span>}
-                    <span className={`px-2 py-0.5 rounded-full border ${active ? 'border-amber-500 bg-amber-950/50 text-amber-300 font-semibold' : 'border-stone-800 text-stone-600'}`}>
-                      {ph.label}
-                    </span>
-                  </span>
-                );
-              })}
-            </div>
-
-            {/* 对手席位 */}
-            <div className="flex flex-wrap justify-center gap-2">
-              {others.map(p => {
-                const isTarget = selected?.targetSeat === p.seat;
-                const selectable = isMyTurn && isSha && !p.dead && p.inRange && (!game!.shaUsed || !!me_?.equip.some(e => e.kind === 'liannu'));
-                return (
-                  <button
-                    key={p.id}
-                    disabled={!selectable}
-                    onClick={() => setSelected(s => (s && s.targetSeat === p.seat) ? { cardId: s.cardId, targetSeat: null } : (s ? { cardId: s.cardId, targetSeat: p.seat } : s))}
-                    className={`text-left rounded-lg border px-3 py-2 min-w-[140px] transition-all ${
-                      p.dead ? 'opacity-35 border-stone-800 bg-stone-950'
-                      : isTarget ? 'border-amber-400 bg-amber-950/50 ring-2 ring-amber-500/60 scale-[1.02]'
-                      : selectable ? 'border-stone-600 bg-stone-900 cursor-pointer hover:border-amber-700/60'
-                      : game!.turnSeat === p.seat && game!.phase === 'play' ? 'border-amber-700/60 bg-stone-900' : 'border-stone-800 bg-stone-900'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-sm truncate max-w-[120px]">{p.name}{p.dead && <span className="text-xs text-stone-500"> 阵亡</span>}</span>
-                      <span className="text-[10px] text-stone-500 shrink-0">手牌 {p.handCount}</span>
-                    </div>
-                    {/* 体力勾玉 */}
-                    <div className="mt-1.5 flex gap-1 flex-wrap">
-                      {Array.from({ length: p.maxHp }).map((_, i) => (
-                        <span key={i} className={`inline-block w-2.5 h-2.5 rounded-full border ${i < p.hp ? 'bg-red-500 border-red-300/70 shadow-[0_0_4px_rgba(239,68,68,0.7)]' : 'bg-stone-800 border-stone-700'}`} />
-                      ))}
-                    </div>
-                    {/* 装备徽章 */}
-                    {p.equip.length > 0 && (
-                      <div className="mt-1.5 flex gap-1 flex-wrap">
-                        {p.equip.map(e => (
-                          <span key={e.slot} className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-950/70 border border-yellow-800/60 text-yellow-200/90">
-                            {EQUIP_BADGE[e.slot]} {e.name}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="text-[10px] text-stone-500">
-                        {game!.turnSeat === p.seat && !p.dead && game!.phase === 'play' ? '行动中…' : `距离 ${p.dist}`}
-                      </span>
-                      {selectable && <span className="text-[10px] text-amber-400">可攻击</span>}
-                      {!selectable && isMyTurn && isSha && !p.dead && !p.inRange && (
-                        <span className="text-[10px] text-stone-600">距离不足</span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* 中央提示 */}
-            {myPrompt ? (
-              <div className="rounded-lg border border-amber-500 bg-amber-950/40 px-4 py-3 backdrop-blur">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <p className="text-sm text-amber-300">
-                    {myPrompt.type === 'shan' ? '是否打出【闪】抵消【杀】？' : `濒死！是否打出【${myPrompt.dyingSeat === mySeat ? '桃／酒自救' : '桃'}】？`}
-                    <span className="text-stone-400">（{promptLeft}s）</span>
-                  </p>
-                  <div className="flex gap-2">
-                    <Button size="sm" className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold"
-                      onClick={() => {
-                        const dyingSelf = myPrompt!.dyingSeat === mySeat;
-                        const card = hand.find(c => c.kind === myPrompt!.type || (myPrompt!.type === 'tao' && dyingSelf && c.kind === 'jiu'));
-                        if (card) respond(card.id);
-                      }}>
-                      出牌响应
-                    </Button>
-                    <Button size="sm" variant="outline" className="border-stone-600 hover:bg-stone-800" onClick={() => respond(null)}>
-                      放弃
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="text-center text-sm text-stone-400">
-                {game!.phase === 'over'
-                  ? `对局结束：${game!.winner ?? '平局'} 获胜`
-                  : game!.phase === 'play'
-                    ? game!.turnSeat === mySeat
-                      ? game!.turnPhase === 'play' ? '轮到你出牌' : `你的回合 · ${PHASES.find(x => x.key === game!.turnPhase)?.label ?? ''}阶段`
-                      : `等待 ${game!.players.find(p => p.seat === game!.turnSeat)?.name ?? ''}（${PHASES.find(x => x.key === game!.turnPhase)?.label ?? ''}）…`
-                    : ''}
-              </p>
-            )}
-
-            {/* 对局结束返回准备区 */}
-            {game!.phase === 'over' && (
-              <div className="flex justify-center gap-2">
-                <Button className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold"
-                  onClick={() => { setGame(null); setHand([]); }}>
-                  返回准备区
-                </Button>
-              </div>
-            )}
-
-            {/* 自己面板 */}
-            <div className="rounded-lg border border-stone-800 bg-stone-900/80 backdrop-blur p-3 space-y-2">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold text-sm">{me_?.name ?? '你'}</span>
-                  <span className="flex gap-1">
-                    {Array.from({ length: me_?.maxHp ?? 0 }).map((_, i) => (
-                      <span key={i} className={`inline-block w-3 h-3 rounded-full border ${i < (me_?.hp ?? 0) ? 'bg-red-500 border-red-300/70 shadow-[0_0_5px_rgba(239,68,68,0.7)]' : 'bg-stone-800 border-stone-700'}`} />
-                    ))}
-                  </span>
-                  <span className="text-xs text-stone-500">{me_?.hp ?? 0}/{me_?.maxHp ?? 0}</span>
-                  {isMyTurn && game!.shaUsed && !me_?.equip.some(e => e.kind === 'liannu') && (
-                    <span className="text-xs text-stone-500">· 本回合【杀】已用</span>
-                  )}
-                  {isMyTurn && game!.wineUsed && <span className="text-xs text-amber-500/80">· 酒已用</span>}
-                </div>
-                {/* 装备区 */}
-                <div className="flex gap-1 flex-wrap">
-                  {(['weapon', 'armor', 'horse+', 'horse-'] as EquipSlot[]).map(slot => {
-                    const e = me_?.equip.find(x => x.slot === slot);
-                    return (
-                      <span key={slot} className={`text-[10px] px-2 py-0.5 rounded border ${e ? 'bg-yellow-950/70 border-yellow-700/60 text-yellow-200' : 'bg-stone-950 border-stone-800 text-stone-700'}`}>
-                        {e ? `${EQUIP_ICON[slot]} ${e.name}` : EQUIP_ICON[slot] + ' 空'}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {/* 手牌 */}
-              <div className="flex gap-2 overflow-x-auto pb-1 min-h-[96px] items-end">
-                {hand.length === 0 && <p className="text-stone-600 text-sm py-4">（空）</p>}
-                {hand.map(c => {
-                  const isSel = selected?.cardId === c.id;
-                  const responseMatch = myPrompt && (c.kind === myPrompt.type || (myPrompt.type === 'tao' && myPrompt.dyingSeat === mySeat && c.kind === 'jiu'));
-                  const dim = !!myPrompt && !responseMatch;
-                  return (
-                    <button
-                      key={c.id}
-                      onClick={() => { if (myPrompt) return; setSelected(s => (s?.cardId === c.id ? null : { cardId: c.id, targetSeat: null })); }}
-                      className={`relative w-[62px] h-[88px] shrink-0 rounded-lg border flex flex-col items-center justify-center transition-all ${cardFaceClass(c)} ${
-                        isSel ? 'ring-2 ring-amber-400 -translate-y-2 shadow-lg shadow-amber-900/40' : ''
-                      } ${responseMatch ? 'ring-2 ring-emerald-400 -translate-y-1' : ''} ${dim ? 'opacity-40' : 'hover:-translate-y-1'}`}
-                    >
-                      <span className="absolute top-1 left-1.5 text-[10px] leading-none font-mono">
-                        {RANK_LABEL(c.rank)}<span className={SUIT_IS_RED[c.suit] ? 'text-red-400' : 'text-stone-300'}>{SUIT_SYM[c.suit]}</span>
-                      </span>
-                      <span className="font-semibold text-sm px-1 text-center leading-tight">{c.name}</span>
-                      <span className={`absolute bottom-1 right-1.5 text-[10px] leading-none rotate-180 font-mono ${SUIT_IS_RED[c.suit] ? 'text-red-400' : 'text-stone-300'}`}>
-                        {RANK_LABEL(c.rank)}{SUIT_SYM[c.suit]}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* 操作按钮 */}
-              {isMyTurn && !myPrompt && (
-                <div className="flex gap-2 justify-center flex-wrap">
-                  <Button
-                    className="bg-amber-600 hover:bg-amber-500 text-stone-950 font-semibold"
-                    disabled={!canPlaySelected}
-                    onClick={playCard}
-                  >
-                    出牌{selectedCard ? (
-                      isSha ? (selected?.targetSeat !== null ? ` → ${game!.players.find(p => p.seat === selected?.targetSeat)?.name}` : '（先选目标）')
-                      : `：【${selectedCard.name}】`
-                    ) : ''}
-                  </Button>
-                  <Button variant="outline" className="border-stone-600 hover:bg-stone-800" onClick={() => api('game.action', { type: 'end' })}>
-                    结束回合
-                  </Button>
-                  {selected && (
-                    <Button variant="ghost" className="text-stone-400" onClick={() => setSelected(null)}>
-                      取消选择
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* 记录 + 聊天 */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Card className="bg-stone-900/90 border-stone-800">
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-stone-300">对局记录</CardTitle></CardHeader>
-            <CardContent className="p-0 pb-3">
-              <ScrollArea className="h-40">
-                <div className="px-4 text-xs space-y-1 text-stone-400">
-                  {logs.length === 0 && <p className="text-stone-600 py-4">（暂无）</p>}
-                  {logs.map((l, i) => <p key={i}>{l.text}</p>)}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-          <Card className="bg-stone-900/90 border-stone-800">
-            <CardHeader className="pb-2"><CardTitle className="text-sm text-stone-300">聊天</CardTitle></CardHeader>
-            <CardContent className="p-0 pb-3">
-              <ScrollArea className="h-32">
-                <div className="px-4 text-xs space-y-1 text-stone-400">
-                  {chat.length === 0 && <p className="text-stone-600 py-4">（暂无发言）</p>}
-                  {chat.map((m, i) => <p key={i}><span className="text-amber-500">{m.from}：</span>{m.text}</p>)}
-                </div>
-              </ScrollArea>
-              <div className="px-4 pt-2 flex gap-2">
-                <Input
-                  value={chatInput} maxLength={120}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => e.key === 'Enter' && sendChat()}
-                  placeholder="发言…"
-                  className="h-8 text-xs bg-stone-950 border-stone-700"
-                />
-                <Button size="sm" variant="outline" className="border-stone-700 hover:bg-stone-800 shrink-0" onClick={sendChat}>
-                  发送
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
+            </ScrollArea>
+          )}
         </div>
       </div>
+
+      {/* 右上：牌堆信息 */}
+      <div className="absolute top-2 right-2 z-20 text-right text-xs text-stone-400 bg-black/50 rounded-lg px-3 py-1.5 border border-stone-700/60">
+        牌堆 {game.deckCount} · 弃牌 {game.discardCount}
+      </div>
+
+      {/* 中央提示 / 响应条 */}
+      {myPrompt && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-30 rounded-lg border border-amber-500/70 bg-black/75 backdrop-blur px-5 py-3 text-center">
+          <p className="text-amber-300 font-bold text-sm mb-2">
+            {myPrompt.type === 'shan' ? '请打出【闪】响应' : myPrompt.dyingSeat === mySeat ? '你濒死了！使用【桃】或【酒】自救' : `${game.players.find(p => p.seat === myPrompt.dyingSeat)?.name ?? ''} 濒死，可出【桃】相救`}
+          </p>
+          <Button size="sm" variant="outline" className="border-stone-600 text-stone-300" onClick={() => respond(null)}>放弃</Button>
+        </div>
+      )}
+      {over && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70">
+          <div className="text-center">
+            <p className="text-3xl font-serif font-bold text-amber-400 tracking-widest mb-4">
+              {game.winner ? `${game.winner} 获胜` : '对局结束'}
+            </p>
+            <Button className="bg-amber-600 hover:bg-amber-500" onClick={() => { setGame(null); setHand([]); setLogs([]); }}>返回房间</Button>
+          </div>
+        </div>
+      )}
+
+      {/* 对手环绕（右 → 上 → 左 弧形） */}
+      {opponents.map((p, i) => {
+        const ang = (Math.PI * (i + 1)) / (opponents.length + 1);
+        const x = 50 + 43 * Math.cos(ang);
+        const y = 42 - 34 * Math.sin(ang);
+        const isTurn = game.turnSeat === p.seat && !over;
+        const targetable = selected?.cardId != null && p.inRange && !p.dead && p.seat !== mySeat;
+        return (
+          <button
+            key={p.id}
+            disabled={!targetable}
+            onClick={() => setSelected(s => (s ? { cardId: s.cardId, targetSeat: p.seat } : s))}
+            style={{ left: `${x}%`, top: `${y}%` }}
+            className={`absolute -translate-x-1/2 -translate-y-1/2 z-10 flex flex-col items-center transition-all ${targetable ? 'cursor-pointer scale-105' : 'cursor-default'}`}
+          >
+            <div className={`w-14 h-14 md:w-16 md:h-16 rounded-full border-2 flex items-center justify-center text-xl font-serif font-bold shadow-xl ${
+              p.dead ? 'border-stone-700 bg-stone-800 text-stone-600 opacity-50'
+              : isTurn ? 'border-amber-400 bg-gradient-to-br from-amber-800 to-stone-800 text-amber-200 shadow-[0_0_16px_rgba(251,191,36,.5)] animate-pulse'
+              : targetable ? 'border-red-400 bg-gradient-to-br from-red-950 to-stone-900 text-red-200 shadow-[0_0_12px_rgba(248,113,113,.5)]'
+              : 'border-stone-500 bg-gradient-to-br from-stone-700 to-stone-900 text-stone-300'}`}>
+              {p.name.slice(0, 1)}
+            </div>
+            <span className={`mt-1 px-1.5 rounded text-[10px] md:text-xs ${isTurn ? 'bg-amber-500 text-black font-bold' : 'bg-black/60 text-stone-300'}`}>
+              {p.name}
+            </span>
+            <div className="mt-0.5"><HpGems hp={p.hp} maxHp={p.maxHp} /></div>
+            <span className="text-[10px] text-stone-400 mt-0.5">
+              手牌 {p.handCount}{!p.dead && p.seat !== mySeat ? ` · 距离${p.dist}` : ''}
+            </span>
+            {p.equip.length > 0 && (
+              <span className="text-[10px] text-amber-600/90 mt-0.5 max-w-24 truncate">
+                {p.equip.map(e => EQUIP_ICON[e.slot]).join(' ')}
+              </span>
+            )}
+          </button>
+        );
+      })}
+
+      {/* 自己：左下 */}
+      {mySelf && (
+        <div className="absolute left-3 bottom-32 md:left-6 md:bottom-36 z-10 flex flex-col items-center">
+          <div className={`w-16 h-16 md:w-20 md:h-20 rounded-full border-2 flex items-center justify-center text-2xl font-serif font-bold shadow-xl ${
+            mySelf.dead ? 'border-stone-700 bg-stone-800 text-stone-600 opacity-50'
+            : isMyTurn ? 'border-amber-400 bg-gradient-to-br from-amber-800 to-stone-800 text-amber-200 shadow-[0_0_18px_rgba(251,191,36,.6)]'
+            : 'border-amber-700/70 bg-gradient-to-br from-stone-700 to-stone-900 text-stone-200'}`}>
+            {mySelf.name.slice(0, 1)}
+          </div>
+          <span className="mt-1 px-1.5 rounded text-xs bg-black/60 text-amber-300">{mySelf.name}（你）</span>
+          <div className="mt-1"><HpGems hp={mySelf.hp} maxHp={mySelf.maxHp} /></div>
+          <div className="mt-1 flex flex-col gap-0.5">
+            {mySelf.equip.map(e => (
+              <span key={e.slot} className="text-[10px] text-amber-500/90 bg-black/50 rounded px-1">
+                {EQUIP_ICON[e.slot]} {e.name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 当前回合阶段提示（顶部中央） */}
+      {!over && turnPlayer && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 text-xs text-stone-300 bg-black/50 rounded-full px-4 py-1 border border-stone-700/60">
+          {isMyTurn ? <span className="text-amber-400 font-bold">你的回合 · {PHASE_LABEL[game.turnPhase]}</span>
+            : <>{turnPlayer.name} 的回合 · {PHASE_LABEL[game.turnPhase]}</>}
+        </div>
+      )}
+
+      {/* 操作按钮：右下 */}
+      {(isMyTurn || selected) && (
+        <div className="absolute right-3 bottom-32 md:right-6 md:bottom-36 z-20 flex flex-col gap-2">
+          {selected && (
+            <Button className="bg-red-700 hover:bg-red-600 font-bold tracking-widest" disabled={selected.targetSeat === null} onClick={playSelected}>
+              出 牌{selected.targetSeat !== null ? `→${game.players.find(p => p.seat === selected.targetSeat)?.name}` : ''}
+            </Button>
+          )}
+          {isMyTurn && <Button variant="outline" className="border-stone-500 text-stone-200" onClick={endTurn}>结束回合</Button>}
+          {selected && <Button variant="ghost" className="text-stone-400" onClick={() => setSelected(null)}>取消</Button>}
+        </div>
+      )}
+
+      {/* 手牌：底部重叠横排 */}
+      <div className="absolute bottom-0 inset-x-0 z-30">
+        <div className="flex justify-center items-end px-2 pb-1 overflow-x-auto pt-6">
+          {hand.map((c, i) => {
+            const selectable = isMyTurn ? canPlayNow(c) : !!(myPrompt && (c.kind === myPrompt.type || (myPrompt.type === 'tao' && myPrompt.dyingSeat === mySeat && c.kind === 'jiu')));
+            const isSelected = selected?.cardId === c.id;
+            return (
+              <div key={c.id} className={i === 0 ? '' : '-ml-8'} style={{ zIndex: isSelected ? 50 : i }}>
+                <CardFace card={c} selected={isSelected || respondCard === c.id} onClick={() => handleHandClick(c)} />
+                {!selectable && !myPrompt && isMyTurn && <span />}
+              </div>
+            );
+          })}
+          {hand.length === 0 && <p className="text-stone-600 text-xs pb-4">（无手牌）</p>}
+        </div>
+        {!isMyTurn && !myPrompt && !over && (
+          <p className="text-center text-[11px] text-stone-500 pb-1 -mt-5">等待 {turnPlayer?.name ?? ''} 行动…</p>
+        )}
+      </div>
+
+      {/* 聊天：右下浮层 */}
+      <details className="absolute bottom-1 right-2 z-40 md:bottom-2">
+        <summary className="list-none cursor-pointer rounded-full bg-black/70 border border-stone-600 px-3 py-1 text-xs text-stone-300">💬 聊天</summary>
+        <div className="absolute bottom-10 right-0 w-60 rounded-lg border border-stone-700 bg-black/80 backdrop-blur p-2">
+          <ScrollArea className="h-36">
+            <div className="text-xs space-y-1 text-stone-300 px-1">
+              {chat.length === 0 && <p className="text-stone-600">（暂无发言）</p>}
+              {chat.map((m, i) => <p key={i}><span className="text-amber-500">{m.from}：</span>{m.text}</p>)}
+            </div>
+          </ScrollArea>
+          <div className="flex gap-1 mt-1">
+            <Input value={chatInput} maxLength={120} onChange={e => setChatInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && sendChat()} placeholder="发言…" className="h-7 text-xs bg-stone-950 border-stone-700" />
+          </div>
+        </div>
+      </details>
+
+      {err && <p className="absolute bottom-24 left-1/2 -translate-x-1/2 text-red-400 text-xs bg-black/70 px-3 py-1 rounded z-40">{err}</p>}
     </main>
   );
 }

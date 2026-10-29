@@ -120,3 +120,25 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ---------- 无名杀牌桌 ---------- */
+
+/* 牌面竖排牌名（原版书法排布感） */
+.writing-vertical {
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: 0.25em;
+}
+
+/* 纸质牌面 */
+.playing-card {
+  background: linear-gradient(160deg, #f5ecd7 0%, #e8dcbf 55%, #d9caa4 100%);
+  border-color: rgba(120, 90, 40, 0.55);
+}
+.playing-card:hover {
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(251, 191, 36, 0.35);
+}
+
+/* 战报滚动条弱化 */
+.text-[11px]::-webkit-scrollbar { width: 4px; }
+.text-[11px]::-webkit-scrollbar-thumb { background: rgba(251, 191, 36, .3); border-radius: 4px; }
