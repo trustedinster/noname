@@ -5,3 +5,7 @@ db/custom.db-journal
 *.log
 .env*.local
 .DS_Store
+# 构建产物（min 包纪律：仓库只放源码）
+dist/
+next-dist/
+tsconfig.tsbuildinfo
