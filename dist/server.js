@@ -44,11 +44,49 @@ var CARD_NAMES = {
   sha: "\u6740",
   shan: "\u95EA",
   tao: "\u6843",
-  wuzhong: "\u65E0\u4E2D\u751F\u6709"
+  jiu: "\u9152",
+  bagua: "\u516B\u5366\u9635",
+  qinglong: "\u9752\u9F99\u5043\u6708\u5200",
+  fangtian: "\u65B9\u5929\u753B\u621F",
+  liannu: "\u8BF8\u845B\u8FDE\u5F29",
+  horse_plus: "+1\u9A6C",
+  horse_minus: "-1\u9A6C"
 };
 
 // mini-services/noname-server/src/sgs-lite.ts
 var ASK_MS = 8e3;
+var ASK_DYING_MS = 6e3;
+var BASIC_SPEC = [
+  ["sha", 30],
+  ["shan", 22],
+  ["tao", 12],
+  ["jiu", 4]
+];
+var SUITS = ["spade", "heart", "club", "diamond"];
+var EQUIP_SPEC = [
+  { kind: "liannu", slot: "weapon", range: 1, suit: "diamond", rank: 1 },
+  { kind: "qinglong", slot: "weapon", range: 3, suit: "spade", rank: 5 },
+  { kind: "fangtian", slot: "weapon", range: 4, suit: "diamond", rank: 12 },
+  { kind: "bagua", slot: "armor", suit: "spade", rank: 2 },
+  { kind: "horse_plus", slot: "horse+", suit: "club", rank: 5 },
+  { kind: "horse_plus", slot: "horse+", suit: "spade", rank: 5 },
+  { kind: "horse_plus", slot: "horse+", suit: "heart", rank: 13 },
+  { kind: "horse_minus", slot: "horse-", suit: "heart", rank: 5 },
+  { kind: "horse_minus", slot: "horse-", suit: "spade", rank: 13 },
+  { kind: "horse_minus", slot: "horse-", suit: "diamond", rank: 8 }
+];
+var KIND_TYPE = {
+  sha: "basic",
+  shan: "basic",
+  tao: "basic",
+  jiu: "basic",
+  liannu: "equip",
+  qinglong: "equip",
+  fangtian: "equip",
+  bagua: "equip",
+  horse_plus: "equip",
+  horse_minus: "equip"
+};
 var SgsLiteHost = class {
   constructor(io) {
     this.io = io;
@@ -58,11 +96,16 @@ var SgsLiteHost = class {
     this.discard = [];
     this.nextCardId = 1;
     this.turnSeat = 0;
+    this.turnPhase = "prepare";
     this.shaUsed = false;
+    this.wineUsed = false;
+    /** 本回合是否已用酒增益（下一杀 +1 伤害） */
+    this.wineBuff = false;
     this.over = false;
     this.winner = null;
     this.phase = "idle";
     this.pending = null;
+    this.playResolve = null;
     this.queue = Promise.resolve();
   }
   /* ---------------- GameHost 接口 ---------------- */
@@ -79,11 +122,13 @@ var SgsLiteHost = class {
       this.roster = this.roster.filter((r) => r.id !== playerId);
       const s = this.seats.find((x) => x.playerId === playerId);
       if (!s || s.dead || this.phase !== "play") return;
-      this.discard.push(...s.hand);
+      this.discard.push(...s.hand, ...Object.values(s.equip).filter(Boolean));
       s.hand = [];
+      s.equip = {};
       s.dead = true;
       this.io.log(`${s.name} \u79BB\u5F00\u5BF9\u5C40\uFF0C\u5224\u8D1F`);
       if (this.pending?.seat === s.seat) this.resolveAsk(null);
+      if (this.turnSeat === s.seat) this.endPlayPhase();
       await this.checkGameOver();
       this.publish();
     });
@@ -109,7 +154,9 @@ var SgsLiteHost = class {
         }
         const cardId = Number(data.cardId);
         const card = s.hand.find((c) => c.id === cardId);
-        if (card && card.kind === this.pending.type) {
+        const dyingSelf = this.pending.dyingSeat === s.seat;
+        const okKind = card && (card.kind === this.pending.type || this.pending.type === "tao" && dyingSelf && card.kind === "jiu");
+        if (okKind) {
           this.resolveAsk(cardId);
           return;
         }
@@ -135,6 +182,7 @@ var SgsLiteHost = class {
       clearTimeout(this.pending.timer);
       this.pending = null;
     }
+    this.playResolve = null;
   }
   summary() {
     return { started: this.phase === "play", over: this.phase === "over" };
@@ -153,26 +201,47 @@ var SgsLiteHost = class {
       hp: 4,
       maxHp: 4,
       hand: [],
+      equip: {},
       dead: false
     }));
     for (const s of this.seats) s.hand = this.draw(4);
     this.turnSeat = this.seats[0].seat;
     this.shaUsed = false;
+    this.wineUsed = false;
+    this.wineBuff = false;
     this.over = false;
     this.winner = null;
     this.phase = "play";
-    this.io.log("\u5BF9\u5C40\u5F00\u59CB\uFF1A\u8D77\u624B\u6478 4\uFF0C\u5148\u624B\u6478 2\u3002\u6BCF\u56DE\u5408\u9650\u4E00\u5F20\u3010\u6740\u3011");
+    this.io.log("\u5BF9\u5C40\u5F00\u59CB\uFF1A\u8D77\u624B\u6478 4\u3002\u88C5\u5907\u724C\u6253\u51FA\u540E\u7F6E\u4E8E\u88C5\u5907\u533A\uFF0C\u4E0D\u5360\u624B\u724C\u4E0A\u9650");
     this.io.broadcast("game.start", {
       seats: this.seats.map((s) => ({ seat: s.seat, playerId: s.playerId, name: s.name }))
     });
-    this.turnDraw();
     this.publish();
+    void this.gameLoop();
   }
   buildDeck() {
-    const spec = [["sha", 24], ["shan", 18], ["tao", 12], ["wuzhong", 6]];
     const cards = [];
-    for (const [kind, n] of spec)
-      for (let i = 0; i < n; i++) cards.push({ id: this.nextCardId++, kind });
+    for (const [kind, n] of BASIC_SPEC) {
+      for (let i = 0; i < n; i++) {
+        cards.push({
+          id: this.nextCardId++,
+          kind,
+          type: KIND_TYPE[kind],
+          suit: SUITS[Math.floor(Math.random() * 4)],
+          rank: 1 + Math.floor(Math.random() * 13)
+        });
+      }
+    }
+    for (const e of EQUIP_SPEC) {
+      cards.push({
+        id: this.nextCardId++,
+        kind: e.kind,
+        type: "equip",
+        suit: e.suit,
+        rank: e.rank,
+        equip: { slot: e.slot, range: e.range }
+      });
+    }
     for (let i = cards.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [cards[i], cards[j]] = [cards[j], cards[i]];
@@ -190,6 +259,7 @@ var SgsLiteHost = class {
           const k = Math.floor(Math.random() * (j + 1));
           [this.deck[j], this.deck[k]] = [this.deck[k], this.deck[j]];
         }
+        this.io.log("\u724C\u5806\u5DF2\u5C3D\uFF0C\u5F03\u724C\u5806\u6D17\u56DE");
       }
       const c = this.deck.pop();
       if (c) out.push(c);
@@ -202,19 +272,95 @@ var SgsLiteHost = class {
   alive() {
     return this.seats.filter((s) => !s.dead);
   }
-  /* ---------------- 回合与出牌 ---------------- */
-  turnDraw() {
-    const s = this.bySeat(this.turnSeat);
-    if (!s) return;
-    this.shaUsed = false;
-    s.hand.push(...this.draw(2));
-    this.io.log(`\u8F6E\u5230 ${s.name}\uFF0C\u6478 2 \u5F20`);
+  /* ---------------- 回合循环与阶段机 ---------------- */
+  async gameLoop() {
+    while (!this.over && this.phase === "play") {
+      const s = this.bySeat(this.turnSeat);
+      if (!s || s.dead) {
+        this.turnSeat = this.nextAliveSeat(this.turnSeat);
+        continue;
+      }
+      await this.runTurn(s);
+      if (this.over) break;
+      this.turnSeat = this.nextAliveSeat(this.turnSeat);
+    }
   }
+  nextAliveSeat(from) {
+    const order = this.alive().map((x) => x.seat).sort((a, b) => a - b);
+    return order.find((x) => x > from) ?? order[0];
+  }
+  setPhase(p) {
+    this.turnPhase = p;
+    this.publish();
+  }
+  async runTurn(s) {
+    this.shaUsed = false;
+    this.wineUsed = false;
+    this.wineBuff = false;
+    this.setPhase("prepare");
+    this.io.log(`\u2014\u2014 ${s.name} \u7684\u56DE\u5408 \u2014\u2014`);
+    this.setPhase("judgment");
+    this.setPhase("draw");
+    const drawn = this.draw(2);
+    s.hand.push(...drawn);
+    this.io.log(`${s.name} \u6478 2 \u5F20`);
+    this.publish();
+    this.turnPhase = "play";
+    this.publish();
+    await this.waitPlayDecision();
+    if (this.over) return;
+    this.setPhase("discard");
+    if (s.hand.length > s.hp) {
+      const dropped = s.hand.slice(s.hp);
+      this.discard.push(...dropped);
+      s.hand = s.hand.slice(0, s.hp);
+      this.io.log(`${s.name} \u5F03\u7F6E ${dropped.length} \u5F20\u624B\u724C\uFF08\u624B\u724C\u4E0A\u9650 = \u4F53\u529B\uFF09`);
+    }
+    this.publish();
+    this.setPhase("finish");
+  }
+  waitPlayDecision() {
+    return new Promise((res) => {
+      this.playResolve = res;
+    });
+  }
+  endPlayPhase() {
+    const r = this.playResolve;
+    this.playResolve = null;
+    r?.();
+  }
+  /* ---------------- 距离与装备 ---------------- */
+  ringDist(a, b) {
+    const order = this.alive().map((x) => x.seat).sort((x, y) => x - y);
+    const ia = order.indexOf(a), ib = order.indexOf(b);
+    const n = order.length;
+    if (ia < 0 || ib < 0 || n === 0) return 99;
+    return Math.min((ib - ia + n) % n, (ia - ib + n) % n);
+  }
+  /** from 视角到 to 的距离（含坐骑修正，最小 1） */
+  distFrom(from, to) {
+    let d = this.ringDist(from.seat, to.seat);
+    if (from.equip["horse-"]) d -= 1;
+    if (to.equip["horse+"]) d += 1;
+    return Math.max(1, d);
+  }
+  attackRange(s) {
+    return s.equip.weapon?.equip?.range ?? 1;
+  }
+  equipView(s) {
+    return Object.entries(s.equip).filter(([, c]) => Boolean(c)).map(([slot, c]) => ({ slot, kind: c.kind, name: CARD_NAMES[c.kind], suit: c.suit, rank: c.rank }));
+  }
+  /* ---------------- 出牌 ---------------- */
   async dispatch(playerId, type, data) {
     if (type === "respond") return this.onRespond(playerId, data);
     const s = this.bySeat(this.turnSeat);
     if (!s || s.playerId !== playerId) throw new Error("not-your-turn");
-    if (type === "end") return this.endTurn(s);
+    if (this.turnPhase !== "play") throw new Error("not-play-phase");
+    if (type === "end") {
+      this.io.log(`${s.name} \u7ED3\u675F\u51FA\u724C\u9636\u6BB5`);
+      this.endPlayPhase();
+      return;
+    }
     if (type !== "play") throw new Error("bad-action");
     const cardId = Number(data.cardId);
     const idx = s.hand.findIndex((c) => c.id === cardId);
@@ -222,22 +368,28 @@ var SgsLiteHost = class {
     const card = s.hand[idx];
     switch (card.kind) {
       case "sha": {
-        if (this.shaUsed) throw new Error("sha-used");
+        if (this.shaUsed && s.equip.weapon?.kind !== "liannu") throw new Error("sha-used");
         const target = this.bySeat(Number(data.targetSeat));
         if (!target || target.dead || target.seat === s.seat) throw new Error("bad-target");
+        if (this.distFrom(s, target) > this.attackRange(s)) throw new Error("out-of-range");
         s.hand.splice(idx, 1);
         this.discard.push(card);
         this.shaUsed = true;
-        this.io.log(`${s.name} \u5BF9 ${target.name} \u4F7F\u7528\u3010\u6740\u3011`);
+        const dmg = this.wineBuff ? 2 : 1;
+        const wineNote = this.wineBuff ? "\uFF08\u9152\u540E\u4F24\u5BB3 +1\uFF09" : "";
+        this.io.log(`${s.name} \u5BF9 ${target.name} \u4F7F\u7528\u3010\u6740\u3011${wineNote}`);
+        this.wineBuff = false;
         this.publish();
-        await this.resolveSha(s, target);
+        await this.resolveSha(s, target, dmg);
         return;
       }
-      case "wuzhong": {
+      case "jiu": {
+        if (this.wineUsed) throw new Error("jiu-used");
         s.hand.splice(idx, 1);
         this.discard.push(card);
-        s.hand.push(...this.draw(2));
-        this.io.log(`${s.name} \u4F7F\u7528\u3010\u65E0\u4E2D\u751F\u6709\u3011\uFF0C\u6478 2 \u5F20`);
+        this.wineUsed = true;
+        this.wineBuff = true;
+        this.io.log(`${s.name} \u4F7F\u7528\u3010\u9152\u3011\uFF1A\u672C\u56DE\u5408\u4E0B\u4E00\u5F20\u3010\u6740\u3011\u4F24\u5BB3 +1`);
         this.publish();
         return;
       }
@@ -250,11 +402,36 @@ var SgsLiteHost = class {
         this.publish();
         return;
       }
+      case "bagua":
+      case "liannu":
+      case "qinglong":
+      case "fangtian":
+      case "horse_plus":
+      case "horse_minus": {
+        const slot = card.equip.slot;
+        const old = s.equip[slot];
+        s.hand.splice(idx, 1);
+        s.equip[slot] = card;
+        if (old) this.discard.push(old);
+        this.io.log(`${s.name} \u88C5\u5907\u4E86\u3010${CARD_NAMES[card.kind]}\u3011${old ? `\uFF08\u66FF\u6362\u3010${CARD_NAMES[old.kind]}\u3011\uFF09` : ""}`);
+        this.publish();
+        return;
+      }
+      case "shan":
       default:
-        throw new Error("bad-card");
+        throw new Error("card-not-playable");
     }
   }
-  async resolveSha(source, target) {
+  async resolveSha(source, target, dmg) {
+    if (target.equip.armor?.kind === "bagua") {
+      const j = await this.judge(target, "\u516B\u5366\u9635");
+      if (j.suit === "heart" || j.suit === "diamond") {
+        this.io.log(`${target.name} \u7684\u3010\u516B\u5366\u9635\u3011\u5224\u5B9A\u4E3A\u7EA2\u8272\uFF0C\u89C6\u4E3A\u6253\u51FA\u3010\u95EA\u3011`);
+        this.publish();
+        return;
+      }
+      this.io.log(`${target.name} \u7684\u3010\u516B\u5366\u9635\u3011\u5224\u5B9A\u4E3A\u9ED1\u8272\uFF0C\u4ECD\u9700\u6253\u51FA\u3010\u95EA\u3011`);
+    }
     const dodgeId = await this.ask(target.seat, "shan", source.seat);
     if (dodgeId !== null) {
       const card = target.hand.find((c) => c.id === dodgeId);
@@ -266,47 +443,70 @@ var SgsLiteHost = class {
         return;
       }
     }
-    this.io.log(`${target.name} \u672A\u54CD\u5E94\uFF0C\u53D7\u5230 1 \u70B9\u4F24\u5BB3`);
-    await this.damage(target, 1);
+    this.io.log(`${target.name} \u672A\u54CD\u5E94\uFF0C\u53D7\u5230 ${dmg} \u70B9\u4F24\u5BB3`);
+    await this.damage(target, dmg);
     this.publish();
+  }
+  /** 从牌堆顶翻开一张判定牌（进弃牌堆） */
+  async judge(who, reason) {
+    const [card] = this.draw(1);
+    if (!card) throw new Error("deck-empty");
+    this.discard.push(card);
+    const sym = card.suit === "spade" || card.suit === "club" ? "\u9ED1" : "\u7EA2";
+    this.io.log(`${who.name} \u8FDB\u884C\u3010${reason}\u3011\u5224\u5B9A\uFF1A${sym} ${card.rank}`);
+    this.publish();
+    return card;
   }
   async damage(target, n) {
     target.hp -= n;
-    while (target.hp <= 0 && !target.dead) {
-      this.io.log(`${target.name} \u6FD2\u6B7B\uFF0C\u53EF\u81EA\u7528\u3010\u6843\u3011`);
-      this.publish();
-      const taoId = await this.ask(target.seat, "tao", null);
-      if (taoId === null) {
-        target.dead = true;
-        this.discard.push(...target.hand);
-        target.hand = [];
-        this.io.log(`${target.name} \u9635\u4EA1`);
-        break;
-      }
-      const card = target.hand.find((c) => c.id === taoId);
-      if (card?.kind === "tao") {
-        target.hand = target.hand.filter((c) => c.id !== taoId);
-        this.discard.push(card);
-        target.hp = Math.min(target.maxHp, target.hp + 1);
-        this.io.log(`${target.name} \u4F7F\u7528\u3010\u6843\u3011\uFF0C\u56DE\u590D\u81F3 ${target.hp} \u4F53\u529B`);
-      } else {
-        break;
-      }
-    }
+    this.publish();
+    await this.dyingProcess(target);
     await this.checkGameOver();
   }
-  async endTurn(s) {
-    if (s.hand.length > s.hp) {
-      const dropped = s.hand.slice(s.hp);
-      this.discard.push(...dropped);
-      s.hand = s.hand.slice(0, s.hp);
-      this.io.log(`${s.name} \u5F03\u7F6E ${dropped.length} \u5F20\u624B\u724C`);
+  /** 濒死流程：从濒死者自己起，按座次顺位向持牌者求桃 */
+  async dyingProcess(target) {
+    while (target.hp <= 0 && !target.dead && !this.over) {
+      this.io.log(`${target.name} \u6FD2\u6B7B\uFF08\u4F53\u529B ${target.hp}\uFF09\uFF0C\u5411\u5168\u573A\u6C42\u3010\u6843\u3011`);
+      this.publish();
+      const order = this.seatOrderFrom(target.seat);
+      let saved = false;
+      for (const helper of order) {
+        const canSelfJiu = helper.seat === target.seat;
+        const hasCard = helper.hand.some((c) => c.kind === "tao" || canSelfJiu && c.kind === "jiu");
+        if (!hasCard) continue;
+        const id = await this.ask(helper.seat, "tao", null, target.seat);
+        if (id === null) continue;
+        const card = helper.hand.find((c) => c.id === id);
+        if (!card) continue;
+        helper.hand = helper.hand.filter((c) => c.id !== id);
+        this.discard.push(card);
+        target.hp = Math.min(target.maxHp, target.hp + 1);
+        const selfNote = helper.seat === target.seat ? "\u81EA\u6551" : `\u88AB ${helper.name} \u6240\u6551`;
+        this.io.log(`${target.name} ${selfNote}\uFF08\u3010${CARD_NAMES[card.kind]}\u3011\uFF09\uFF0C\u4F53\u529B\u56DE\u590D\u81F3 ${target.hp}`);
+        this.publish();
+        if (target.hp > 0) {
+          saved = true;
+          break;
+        }
+      }
+      if (!saved && target.hp <= 0) {
+        target.dead = true;
+        this.discard.push(...target.hand, ...Object.values(target.equip).filter(Boolean));
+        target.hand = [];
+        target.equip = {};
+        this.io.log(`${target.name} \u9635\u4EA1`);
+        this.publish();
+        if (this.turnSeat === target.seat) this.endPlayPhase();
+        break;
+      }
     }
+  }
+  /** 从某座位开始按座次顺位返回存活座位 */
+  seatOrderFrom(seat) {
     const order = this.alive().map((x) => x.seat).sort((a, b) => a - b);
-    this.turnSeat = order.find((x) => x > s.seat) ?? order[0];
-    this.shaUsed = false;
-    this.turnDraw();
-    this.publish();
+    const i = order.indexOf(seat);
+    const rotated = i >= 0 ? [...order.slice(i), ...order.slice(0, i)] : order;
+    return rotated.map((x) => this.bySeat(x)).filter(Boolean);
   }
   async checkGameOver() {
     const alive = this.alive();
@@ -319,18 +519,21 @@ var SgsLiteHost = class {
         clearTimeout(this.pending.timer);
         this.pending = null;
       }
+      this.endPlayPhase();
       this.io.broadcast("game.over", { reason: "win", winner: this.winner, state: this.publicState() });
     }
   }
   /* ---------------- 询问（闪 / 桃） ---------------- */
-  ask(seat, type, fromSeat) {
+  ask(seat, type, fromSeat, dyingSeat) {
     return new Promise((resolve) => {
+      const ms = type === "tao" ? ASK_DYING_MS : ASK_MS;
       const p = {
         seat,
         type,
         fromSeat,
-        until: Date.now() + ASK_MS,
-        timer: setTimeout(() => this.resolveAsk(null), ASK_MS),
+        dyingSeat,
+        until: Date.now() + ms,
+        timer: setTimeout(() => this.resolveAsk(null), ms),
         resolve: (cardId) => {
           clearTimeout(p.timer);
           resolve(cardId);
@@ -356,26 +559,39 @@ var SgsLiteHost = class {
     }
     const cardId = Number(data.cardId);
     const card = s.hand.find((c) => c.id === cardId);
-    if (!card || card.kind !== this.pending.type) throw new Error("bad-response");
+    const dyingSelf = this.pending.dyingSeat === s.seat;
+    if (!card || !(card.kind === this.pending.type || this.pending.type === "tao" && dyingSelf && card.kind === "jiu"))
+      throw new Error("bad-response");
     this.resolveAsk(cardId);
   }
   /* ---------------- 状态广播 ---------------- */
   publicState() {
-    const prompt = this.pending ? { type: this.pending.type, seat: this.pending.seat, fromSeat: this.pending.fromSeat, until: this.pending.until } : null;
+    const prompt = this.pending ? { type: this.pending.type, seat: this.pending.seat, fromSeat: this.pending.fromSeat, dyingSeat: this.pending.dyingSeat, until: this.pending.until } : null;
+    const actor = this.bySeat(this.turnSeat);
     return {
-      players: this.seats.map((s) => ({
-        seat: s.seat,
-        id: s.playerId,
-        name: s.name,
-        hp: Math.max(0, s.hp),
-        maxHp: s.maxHp,
-        handCount: s.hand.length,
-        dead: s.dead
-      })),
+      players: this.seats.map((s) => {
+        const isActor = !!actor && !actor.dead && s.seat !== actor.seat;
+        const dist = actor && s.seat !== actor.seat ? this.distFrom(actor, s) : 0;
+        return {
+          seat: s.seat,
+          id: s.playerId,
+          name: s.name,
+          hp: Math.max(0, s.hp),
+          maxHp: s.maxHp,
+          handCount: s.hand.length,
+          dead: s.dead,
+          dist: isActor ? dist : 0,
+          inRange: isActor ? dist <= this.attackRange(actor) : false,
+          equip: this.equipView(s)
+        };
+      }),
       turnSeat: this.turnSeat,
       phase: this.phase === "over" ? "over" : "play",
+      turnPhase: this.turnPhase,
       prompt,
       shaUsed: this.shaUsed,
+      wineUsed: this.wineUsed,
+      deckCount: this.deck.length,
       discardCount: this.discard.length,
       winner: this.winner
     };
@@ -385,7 +601,7 @@ var SgsLiteHost = class {
     this.io.broadcast("game.state", this.publicState());
     for (const s of this.seats) {
       this.io.sendTo(s.playerId, "game.state.private", {
-        hand: s.hand.map((c) => ({ id: c.id, kind: c.kind, name: CARD_NAMES[c.kind] }))
+        hand: s.hand.map((c) => ({ id: c.id, kind: c.kind, name: CARD_NAMES[c.kind], suit: c.suit, rank: c.rank }))
       });
     }
   }
