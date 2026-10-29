@@ -9,3 +9,7 @@ db/custom.db-journal
 dist/
 next-dist/
 tsconfig.tsbuildinfo
+# 服务器本地运行痕迹（宝塔/pnpm 生成），不入库
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.htaccess
