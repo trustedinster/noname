@@ -107,13 +107,14 @@ export class Room {
 
   roomState(): RoomState {
     const mode = modeFor(this.members.size);
+    const ownerId = this.members.keys().next().value; // 首个入座者即房主
     return {
       id: this.id,
       name: this.name,
       game: "sgs-lite",
       mode: mode?.name ?? "暂无模式",
       modeUnavailable: !mode,
-      members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, ready: m.ready })),
+      members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, ready: m.ready, isOwner: m.id === ownerId })),
       started: this.summary().started,
       over: this.over,
     };
@@ -121,6 +122,14 @@ export class Room {
 
   broadcastRoomState() {
     this.broadcast("room.state", this.roomState());
+  }
+
+  isOwner(playerId: string): boolean {
+    return this.members.keys().next().value === playerId;
+  }
+
+  startGame() {
+    this.host.startGame();
   }
 }
 
@@ -232,6 +241,16 @@ export class Lobby {
           }
           case "game.action": {
             if (player?.roomId) this.rooms.get(player.roomId)?.handleGameAction(player.id, msg.d);
+            ack(true, null);
+            break;
+          }
+          case "room.start": {
+            // 全员准备后由房主显式开局
+            if (!player?.roomId) { ack(false, { code: "not-in-room" }); break; }
+            const room = this.rooms.get(player.roomId);
+            if (!room) { ack(false, { code: "no-such-room" }); break; }
+            if (!room.isOwner(player.id)) { ack(false, { code: "not-owner", message: "只有房主能开局" }); break; }
+            room.startGame();
             ack(true, null);
             break;
           }

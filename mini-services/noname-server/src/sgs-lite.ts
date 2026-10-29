@@ -139,9 +139,25 @@ export class SgsLiteHost {
 
   setReady(_playerId?: string, _ready?: boolean) {}
 
+  /** 全员准备后的状态：不再自动开局，等房主显式 startGame */
   maybeStart() {
     this.enqueue(async () => {
       if (this.phase === "play" || this.roster.length < 2) return;
+      if (!this.mode) this.mode = modeFor(this.roster.length);
+      if (this.mode) this.io.log("全员已准备，等待房主开局");
+      else this.io.log("全员已准备，但当前人数暂无可用模式（支持 2 / 3 / 4 / 8 人）");
+      this.publish();
+    });
+  }
+
+  /** 房主手动开局 */
+  startGame() {
+    this.enqueue(async () => {
+      if (this.phase === "play") return;
+      if (this.roster.length < 2) {
+        this.io.log("至少 2 人才能开局");
+        return;
+      }
       this.begin();
     });
   }

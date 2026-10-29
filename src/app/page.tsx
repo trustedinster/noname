@@ -43,7 +43,7 @@ type Seat = { id: string; name: string };
 /* ---------- 大厅 API 信封 ---------- */
 
 type RoomSummary = { id: string; name: string; game: string; mode?: string; players: number; max: number; started: boolean; over: boolean };
-type RoomState = { id: string; name: string; game: string; mode?: string; modeUnavailable?: boolean; members: { id: string; name: string; ready: boolean }[]; started: boolean; over: boolean };
+type RoomState = { id: string; name: string; game: string; mode?: string; modeUnavailable?: boolean; members: { id: string; name: string; ready: boolean; isOwner?: boolean }[]; started: boolean; over: boolean };
 
 const SUIT_CHAR: Record<Suit, string> = { spade: '♠', heart: '♥', club: '♣', diamond: '♦' };
 const isRed = (s: Suit) => s === 'heart' || s === 'diamond';
@@ -318,6 +318,8 @@ export default function Page() {
 
   /* ================= 房间（未开局） ================= */
   if (!room.started || !game) {
+    const isRoomOwner = !!room.members.find(m => m.id === me.id)?.isOwner;
+    const allReady = room.members.length >= 2 && room.members.every(m => m.ready);
     return (
       <main className="relative min-h-screen bg-stone-950">
         <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-20" />
@@ -333,7 +335,10 @@ export default function Page() {
           <div className="space-y-2 mb-6">
             {room.members.map(m => (
               <div key={m.id} className="flex items-center justify-between rounded-lg border border-stone-700/80 bg-stone-900/80 px-4 py-3">
-                <span className="text-stone-200">{m.name}{m.id === me.id && <span className="text-stone-500 text-xs ml-2">（你）</span>}</span>
+                <span className="text-stone-200">
+                  {m.isOwner && <span className="text-amber-400 text-xs mr-1.5">房主</span>}
+                  {m.name}{m.id === me.id && <span className="text-stone-500 text-xs ml-2">（你）</span>}
+                </span>
                 <span className={m.ready ? 'text-emerald-400 text-sm' : 'text-stone-500 text-sm'}>{m.ready ? '已准备' : '未准备'}</span>
               </div>
             ))}
@@ -344,7 +349,17 @@ export default function Page() {
               onClick={async () => { try { const d = await api('room.ready', { ready: !room.members.find(m => m.id === me.id)?.ready }); } catch {} }}>
               切换准备
             </Button>
+            {isRoomOwner && (
+              <Button className="bg-emerald-700 hover:bg-emerald-600 font-bold"
+                disabled={!allReady || room.modeUnavailable}
+                onClick={async () => { try { await api('room.start'); } catch {} }}>
+                开始对局
+              </Button>
+            )}
           </div>
+          {allReady && !isRoomOwner && !room.modeUnavailable && (
+            <p className="text-amber-400/80 text-xs mt-4">全员已准备，等待房主开局…</p>
+          )}
           {err && <p className="text-red-400 text-xs mt-4">{err}</p>}
         </div>
       </main>
