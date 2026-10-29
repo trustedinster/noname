@@ -8,26 +8,21 @@
 - `mini-services/noname-server/` — 联机服务（socket.io，端口 3003，服务端权威卡牌引擎）
 - 协议 v1：消息 = `{ t, seq?, d? }`，带 seq 必回 ack，事件走 `evt`；协议里只有数据，没有代码
 
-## 本地运行（两个终端）
-
-**终端 1 — 联机服务（先起）：**
+## 本地运行（单进程）
 
 ```bash
-cd mini-services/noname-server
-bun install        # 或 npm install
-bun run dev        # 监听 3003，支持热重载
-```
-
-**终端 2 — 前端：**
-
-```bash
-bun install        # 项目根目录；或 npm install
-echo 'NEXT_PUBLIC_GAME_SERVER=http://localhost:3003' > .env.local
-bun run dev        # 监听 3000
+bun install        # 项目根目录
+bun run build      # 生产构建
+bun run start      # 单进程 :3000 —— Next 页面 + socket.io（路径 /socket.io）
+# 或开发模式：bun run dev（同端口，带热重载）
 ```
 
 打开 http://localhost:3000 ，输昵称进大厅 → 创建房间。
 本机开两个浏览器窗口（或一个正常 + 一个无痕）进同一房间、都点「准备」即可开局。
+
+> 旧模式（独立联机服务，经 Caddy 网关 `/?XTransformPort=3003` 分流）仍支持：
+> `cd mini-services/noname-server && bun run dev` 起服务端 :3003，
+> 前端设 `NEXT_PUBLIC_GAME_SERVER=...` 后重启即可。默认不启用，单进程模式已覆盖。
 
 ## 规则速览
 

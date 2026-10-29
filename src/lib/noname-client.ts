@@ -7,11 +7,11 @@
 import { io, type Socket } from "socket.io-client";
 
 /**
- * 线上走 Caddy 网关（相对路径 /?XTransformPort=3003）；
- * 本地调试可设 NEXT_PUBLIC_GAME_SERVER=http://localhost:3003 直连。
+ * 默认同源直连（单进程模式：socket.io 与页面同端口，路径 /socket.io）；
+ * 兼容旧行为：设 NEXT_PUBLIC_GAME_SERVER 可指定独立服务（如 http://localhost:3003 直连，
+ * 或 Caddy 网关 /?XTransformPort=3003 分流）。
  */
-const SERVER_URL =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_GAME_SERVER) || "/?XTransformPort=3003";
+const SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER || undefined;
 
 export type Evt = { t: string; d: any };
 
