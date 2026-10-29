@@ -385,7 +385,7 @@ export default function Page() {
             ⚔ 战报 {showLogs ? '◂' : '▸'}
           </button>
           {showLogs && (
-            <ScrollArea className="h-40 md:h-56 px-3 pb-2">
+            <ScrollArea className="h-40 md:h-56 px-3 pb-2 slim-scroll">
               <div className="text-[11px] leading-5 text-stone-300 space-y-0.5">
                 {logs.slice(-40).map((l, i) => <p key={i}>{l}</p>)}
               </div>
