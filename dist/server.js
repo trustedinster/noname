@@ -53,6 +53,85 @@ var CARD_NAMES = {
   horse_minus: "-1\u9A6C"
 };
 
+// mini-services/noname-server/src/modes.ts
+var ROLE = {
+  zhu: { id: "zhu", name: "\u4E3B\u516C", camp: "lord_side" },
+  zhong: { id: "zhong", name: "\u5FE0\u81E3", camp: "lord_side" },
+  fan: { id: "fan", name: "\u53CD\u8D3C", camp: "rebel" },
+  nei: { id: "nei", name: "\u5185\u5978", camp: "traitor" },
+  lord: { id: "lord", name: "\u5730\u4E3B", camp: "lord_p" },
+  farmer: { id: "farmer", name: "\u519C\u6C11", camp: "farmer_p" },
+  team_a: { id: "team_a", name: "\u7EA2\u961F", camp: "team_a" },
+  team_b: { id: "team_b", name: "\u84DD\u961F", camp: "team_b" }
+};
+function campWinner(alive) {
+  const camps = [...new Set(alive.map((a) => a.camp))];
+  if (camps.length === 1) return ROLE_NAME_OF_CAMP(camps[0], alive);
+  return null;
+}
+function ROLE_NAME_OF_CAMP(camp, alive) {
+  const r = alive.find((a) => a.camp === camp);
+  return r ? ROLE[r.role].name : camp;
+}
+var MODES = {
+  2: {
+    id: "duel",
+    name: "1v1",
+    players: 2,
+    roles: [ROLE.team_a, ROLE.team_b],
+    teammateVisible: false,
+    revealed: [],
+    winnerCheck: campWinner
+  },
+  3: {
+    id: "doudizhu",
+    name: "\u6597\u5730\u4E3B",
+    players: 3,
+    roles: [ROLE.lord, ROLE.farmer, ROLE.farmer],
+    hp: { lord: 5, farmer: 4 },
+    teammateVisible: true,
+    // 农民互见
+    revealed: ["lord"],
+    winnerCheck: campWinner
+  },
+  4: {
+    id: "2v2",
+    name: "2v2",
+    players: 4,
+    roles: [ROLE.team_a, ROLE.team_a, ROLE.team_b, ROLE.team_b],
+    teammateVisible: true,
+    revealed: [],
+    winnerCheck: campWinner
+  },
+  8: {
+    id: "identity8",
+    name: "\u519B\u4E89\u516B\u4EBA\u8EAB\u4EFD\u573A",
+    players: 8,
+    roles: [ROLE.zhu, ROLE.zhong, ROLE.zhong, ROLE.fan, ROLE.fan, ROLE.fan, ROLE.fan, ROLE.nei],
+    hp: { zhu: 5 },
+    // 主公 +1 体力（标准规则）
+    teammateVisible: false,
+    // 身份场全保密（主公除外）
+    revealed: ["zhu"],
+    winnerCheck: (alive) => {
+      const zhuAlive = alive.some((a) => a.role === "zhu");
+      if (!zhuAlive) {
+        if (alive.length === 1 && alive[0].role === "nei") return "\u5185\u5978";
+        return "\u53CD\u8D3C";
+      }
+      if (!alive.some((a) => a.role === "fan" || a.role === "nei")) return "\u4E3B\u516C\u65B9";
+      return null;
+    }
+  }
+  // 5 / 6 / 7 人：暂无模式（开局会被拒绝并提示）
+};
+var ROLE_NAMES = Object.fromEntries(
+  Object.entries(ROLE).map(([k, v]) => [k, v.name])
+);
+function modeFor(count) {
+  return MODES[count] ?? null;
+}
+
 // mini-services/noname-server/src/sgs-lite.ts
 var ASK_MS = 8e3;
 var ASK_DYING_MS = 6e3;
@@ -91,6 +170,7 @@ var SgsLiteHost = class {
   constructor(io) {
     this.io = io;
     this.roster = [];
+    this.mode = null;
     this.seats = [];
     this.deck = [];
     this.discard = [];
@@ -192,17 +272,29 @@ var SgsLiteHost = class {
     this.queue = this.queue.then(fn, () => fn());
   }
   begin() {
+    const mode = modeFor(this.roster.length);
+    if (!mode) {
+      this.io.log(`${this.roster.length} \u4EBA\u6682\u65E0\u53EF\u7528\u6A21\u5F0F\uFF08\u5F53\u524D\u652F\u6301\uFF1A2 \u4EBA 1v1 / 3 \u4EBA\u6597\u5730\u4E3B / 4 \u4EBA 2v2 / 8 \u4EBA\u519B\u4E89\u8EAB\u4EFD\u573A\uFF09`);
+      return;
+    }
+    this.mode = mode;
     this.deck = this.buildDeck();
     this.discard = [];
-    this.seats = this.roster.map((r) => ({
+    const roles = [...mode.roles];
+    for (let i = roles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [roles[i], roles[j]] = [roles[j], roles[i]];
+    }
+    this.seats = this.roster.map((r, idx) => ({
       seat: r.seat,
       playerId: r.id,
       name: r.name,
-      hp: 4,
-      maxHp: 4,
+      hp: mode.hp?.[roles[idx].id] ?? 4,
+      maxHp: mode.hp?.[roles[idx].id] ?? 4,
       hand: [],
       equip: {},
-      dead: false
+      dead: false,
+      role: roles[idx].id
     }));
     for (const s of this.seats) s.hand = this.draw(4);
     this.turnSeat = this.seats[0].seat;
@@ -212,8 +304,9 @@ var SgsLiteHost = class {
     this.over = false;
     this.winner = null;
     this.phase = "play";
-    this.io.log("\u5BF9\u5C40\u5F00\u59CB\uFF1A\u8D77\u624B\u6478 4\u3002\u88C5\u5907\u724C\u6253\u51FA\u540E\u7F6E\u4E8E\u88C5\u5907\u533A\uFF0C\u4E0D\u5360\u624B\u724C\u4E0A\u9650");
+    this.io.log(`\u5BF9\u5C40\u5F00\u59CB\u3010${mode.name}\u3011\uFF1A\u8D77\u624B\u6478 4\u3002\u88C5\u5907\u724C\u6253\u51FA\u540E\u7F6E\u4E8E\u88C5\u5907\u533A\uFF0C\u4E0D\u5360\u624B\u724C\u4E0A\u9650`);
     this.io.broadcast("game.start", {
+      modeName: mode.name,
       seats: this.seats.map((s) => ({ seat: s.seat, playerId: s.playerId, name: s.name }))
     });
     this.publish();
@@ -509,12 +602,15 @@ var SgsLiteHost = class {
     return rotated.map((x) => this.bySeat(x)).filter(Boolean);
   }
   async checkGameOver() {
+    if (!this.mode) return;
     const alive = this.alive();
-    if (this.seats.length >= 2 && alive.length <= 1) {
+    if (this.seats.length >= 2 && alive.length <= this.seats.length - 1) {
+      const verdict = this.mode.winnerCheck(alive.map((a) => ({ role: a.role, camp: ROLE[a.role].camp })));
+      if (!verdict && alive.length >= 2) return;
       this.phase = "over";
       this.over = true;
-      this.winner = alive[0]?.name ?? null;
-      this.io.log(this.winner ? `\u5BF9\u5C40\u7ED3\u675F\uFF1A${this.winner} \u83B7\u80DC\uFF01` : "\u5BF9\u5C40\u7ED3\u675F\uFF1A\u65E0\u4EBA\u5B58\u6D3B");
+      this.winner = verdict ?? "\u65E0\u4EBA";
+      this.io.log(`\u5BF9\u5C40\u7ED3\u675F\uFF1A${this.winner}\u83B7\u80DC\uFF01`);
       if (this.pending) {
         clearTimeout(this.pending.timer);
         this.pending = null;
@@ -582,9 +678,12 @@ var SgsLiteHost = class {
           dead: s.dead,
           dist: isActor ? dist : 0,
           inRange: isActor ? dist <= this.attackRange(actor) : false,
-          equip: this.equipView(s)
+          equip: this.equipView(s),
+          // 身份仅在对局结束（publicState 也被 game.over 复用）时随广播揭示
+          role: this.phase === "over" ? ROLE_NAMES[s.role] : null
         };
       }),
+      modeName: this.mode?.name ?? null,
       turnSeat: this.turnSeat,
       phase: this.phase === "over" ? "over" : "play",
       turnPhase: this.turnPhase,
@@ -600,8 +699,17 @@ var SgsLiteHost = class {
     if (this.seats.length === 0) return;
     this.io.broadcast("game.state", this.publicState());
     for (const s of this.seats) {
+      const visibleRoles = [];
+      if (this.mode) {
+        for (const o of this.seats) {
+          const revealed = o.dead || this.mode.revealed.includes(o.role) || this.mode.teammateVisible && o.seat !== s.seat && ROLE[o.role].camp === ROLE[s.role].camp;
+          if (revealed) visibleRoles.push({ seat: o.seat, role: ROLE_NAMES[o.role] });
+        }
+      }
       this.io.sendTo(s.playerId, "game.state.private", {
-        hand: s.hand.map((c) => ({ id: c.id, kind: c.kind, name: CARD_NAMES[c.kind], suit: c.suit, rank: c.rank }))
+        hand: s.hand.map((c) => ({ id: c.id, kind: c.kind, name: CARD_NAMES[c.kind], suit: c.suit, rank: c.rank })),
+        role: ROLE_NAMES[s.role],
+        visibleRoles
       });
     }
   }
@@ -672,6 +780,7 @@ var Room = class {
       id: this.id,
       name: this.name,
       game: "sgs-lite",
+      mode: modeFor(this.members.size)?.name ?? "\u2014",
       players: this.members.size,
       max: LIMITS.maxPlayersPerRoom,
       started: this.members.size > 0 && [...this.members.values()].every((m) => m.ready) && this.members.size >= 2,
@@ -679,10 +788,13 @@ var Room = class {
     };
   }
   roomState() {
+    const mode = modeFor(this.members.size);
     return {
       id: this.id,
       name: this.name,
       game: "sgs-lite",
+      mode: mode?.name ?? "\u6682\u65E0\u6A21\u5F0F",
+      modeUnavailable: !mode,
       members: [...this.members.values()].map((m) => ({ id: m.id, name: m.name, ready: m.ready })),
       started: this.summary().started,
       over: this.over

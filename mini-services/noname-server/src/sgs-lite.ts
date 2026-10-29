@@ -9,7 +9,9 @@
  *  - 濒死：从濒死者起按座次顺位向持有【桃】者求桃（简化：仅询问持牌者）
  *  - 牌堆 80 张带花色点数（基础牌随机分配），弃牌堆洗回
  *  - 弃牌阶段：手牌自动弃至当前体力（装备不计入手牌上限）
- *  - 胜负：最后存活者胜（无身份，身份局归后续大功能）
+ *  - 模式（按人数自动匹配，见 modes.ts）：
+ *      2 人 1v1 · 3 人斗地主 · 4 人 2v2 · 8 人军争身份场；5/6/7 人开局被拒
+ *    身份随机分配；主公/地主开局公开；队友互见；胜负按阵营判定（winnerCheck）
  *
  * 响应均有服务端超时（杀/闪 8s，求桃 6s），超时视同放弃。
  * 对外接口（start/handleAction/removePlayer/dispose）与 headless 引擎约定一致，
@@ -20,6 +22,7 @@ import type {
   Prompt, Suit, TurnPhase,
 } from "./protocol";
 import { CARD_NAMES } from "./protocol";
+import { modeFor, ROLE, ROLE_NAMES, type ModeConfig, type RoleId } from "./modes";
 
 export interface HostPlayer {
   id: string;
@@ -35,6 +38,7 @@ interface SeatState {
   hand: Card[];
   equip: Partial<Record<EquipSlot, Card>>;
   dead: boolean;
+  role: RoleId;
 }
 
 interface PendingAsk {
@@ -79,6 +83,7 @@ const KIND_TYPE: Record<CardKind, CardType> = {
 
 export class SgsLiteHost {
   private roster: { id: string; name: string; seat: number }[] = [];
+  private mode: ModeConfig | null = null;
   private seats: SeatState[] = [];
   private deck: Card[] = [];
   private discard: Card[] = [];
@@ -201,17 +206,30 @@ export class SgsLiteHost {
   }
 
   private begin() {
+    const mode = modeFor(this.roster.length);
+    if (!mode) {
+      this.io.log(`${this.roster.length} 人暂无可用模式（当前支持：2 人 1v1 / 3 人斗地主 / 4 人 2v2 / 8 人军争身份场）`);
+      return;
+    }
+    this.mode = mode;
     this.deck = this.buildDeck();
     this.discard = [];
-    this.seats = this.roster.map(r => ({
+    // 角色洗牌分配
+    const roles = [...mode.roles];
+    for (let i = roles.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [roles[i], roles[j]] = [roles[j], roles[i]];
+    }
+    this.seats = this.roster.map((r, idx) => ({
       seat: r.seat,
       playerId: r.id,
       name: r.name,
-      hp: 4,
-      maxHp: 4,
+      hp: mode.hp?.[roles[idx].id] ?? 4,
+      maxHp: mode.hp?.[roles[idx].id] ?? 4,
       hand: [],
       equip: {},
       dead: false,
+      role: roles[idx].id,
     }));
     for (const s of this.seats) s.hand = this.draw(4);
     this.turnSeat = this.seats[0].seat;
@@ -221,8 +239,9 @@ export class SgsLiteHost {
     this.over = false;
     this.winner = null;
     this.phase = "play";
-    this.io.log("对局开始：起手摸 4。装备牌打出后置于装备区，不占手牌上限");
+    this.io.log(`对局开始【${mode.name}】：起手摸 4。装备牌打出后置于装备区，不占手牌上限`);
     this.io.broadcast("game.start", {
+      modeName: mode.name,
       seats: this.seats.map(s => ({ seat: s.seat, playerId: s.playerId, name: s.name })),
     });
     this.publish();
@@ -550,12 +569,15 @@ export class SgsLiteHost {
   }
 
   private async checkGameOver() {
+    if (!this.mode) return;
     const alive = this.alive();
-    if (this.seats.length >= 2 && alive.length <= 1) {
+    if (this.seats.length >= 2 && alive.length <= this.seats.length - 1) {
+      const verdict = this.mode.winnerCheck(alive.map(a => ({ role: a.role, camp: ROLE[a.role].camp })));
+      if (!verdict && alive.length >= 2) return; // 模式未分胜负，继续打
       this.phase = "over";
       this.over = true;
-      this.winner = alive[0]?.name ?? null;
-      this.io.log(this.winner ? `对局结束：${this.winner} 获胜！` : "对局结束：无人存活");
+      this.winner = verdict ?? "无人";
+      this.io.log(`对局结束：${this.winner}获胜！`);
       if (this.pending) {
         clearTimeout(this.pending.timer);
         this.pending = null;
@@ -629,8 +651,11 @@ export class SgsLiteHost {
           dist: isActor ? dist : 0,
           inRange: isActor ? dist <= this.attackRange(actor!) : false,
           equip: this.equipView(s),
+          // 身份仅在对局结束（publicState 也被 game.over 复用）时随广播揭示
+          role: this.phase === "over" ? ROLE_NAMES[s.role] : null,
         };
       }),
+      modeName: this.mode?.name ?? null,
       turnSeat: this.turnSeat,
       phase: this.phase === "over" ? "over" : "play",
       turnPhase: this.turnPhase,
@@ -647,8 +672,21 @@ export class SgsLiteHost {
     if (this.seats.length === 0) return;
     this.io.broadcast("game.state", this.publicState());
     for (const s of this.seats) {
+      // 可见身份：自己 / 开局公开者（主公、地主）/ 队友互见模式下的同阵营 / 阵亡者
+      const visibleRoles: { seat: number; role: string }[] = [];
+      if (this.mode) {
+        for (const o of this.seats) {
+          const revealed =
+            o.dead ||
+            this.mode.revealed.includes(o.role) ||
+            (this.mode.teammateVisible && o.seat !== s.seat && ROLE[o.role].camp === ROLE[s.role].camp);
+          if (revealed) visibleRoles.push({ seat: o.seat, role: ROLE_NAMES[o.role] });
+        }
+      }
       this.io.sendTo(s.playerId, "game.state.private", {
         hand: s.hand.map(c => ({ id: c.id, kind: c.kind, name: CARD_NAMES[c.kind], suit: c.suit, rank: c.rank })),
+        role: ROLE_NAMES[s.role],
+        visibleRoles,
       });
     }
   }

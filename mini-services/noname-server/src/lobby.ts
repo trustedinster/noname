@@ -5,6 +5,7 @@
 import { randomUUID } from "node:crypto";
 import type { Socket } from "socket.io";
 import { SgsLiteHost } from "./sgs-lite";
+import { modeFor } from "./modes";
 import { LIMITS, type RoomState, type RoomSummary } from "./protocol";
 
 interface Member {
@@ -95,6 +96,7 @@ export class Room {
       id: this.id,
       name: this.name,
       game: "sgs-lite",
+      mode: modeFor(this.members.size)?.name ?? "—",
       players: this.members.size,
       max: LIMITS.maxPlayersPerRoom,
       started: this.members.size > 0 && [...this.members.values()].every(m => m.ready) && this.members.size >= 2,
@@ -103,10 +105,13 @@ export class Room {
   }
 
   roomState(): RoomState {
+    const mode = modeFor(this.members.size);
     return {
       id: this.id,
       name: this.name,
       game: "sgs-lite",
+      mode: mode?.name ?? "暂无模式",
+      modeUnavailable: !mode,
       members: [...this.members.values()].map(m => ({ id: m.id, name: m.name, ready: m.ready })),
       started: this.summary().started,
       over: this.over,

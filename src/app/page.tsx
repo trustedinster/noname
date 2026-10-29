@@ -21,6 +21,7 @@ type PlayerBrief = {
   seat: number; id: string; name: string;
   hp: number; maxHp: number; handCount: number; dead: boolean;
   dist: number; inRange: boolean; equip: EquipView[];
+  role?: string | null;
 };
 type GameState = {
   players: PlayerBrief[];
@@ -33,14 +34,15 @@ type GameState = {
   deckCount: number;
   discardCount: number;
   winner: string | null;
+  modeName?: string | null;
 };
 type TurnPhase = 'prepare' | 'judgment' | 'draw' | 'play' | 'discard' | 'finish';
 type Seat = { id: string; name: string };
 
 /* ---------- 大厅 API 信封 ---------- */
 
-type RoomSummary = { id: string; name: string; game: string; players: number; max: number; started: boolean; over: boolean };
-type RoomState = { id: string; name: string; game: string; members: { id: string; name: string; ready: boolean }[]; started: boolean; over: boolean };
+type RoomSummary = { id: string; name: string; game: string; mode?: string; players: number; max: number; started: boolean; over: boolean };
+type RoomState = { id: string; name: string; game: string; mode?: string; modeUnavailable?: boolean; members: { id: string; name: string; ready: boolean }[]; started: boolean; over: boolean };
 
 const SUIT_CHAR: Record<Suit, string> = { spade: '♠', heart: '♥', club: '♣', diamond: '♦' };
 const isRed = (s: Suit) => s === 'heart' || s === 'diamond';
@@ -83,6 +85,19 @@ function HpGems({ hp, maxHp }: { hp: number; maxHp: number }) {
   );
 }
 
+/* ---------- 身份徽标（原版配色：主公黄/忠臣绿/反贼红/内奸紫） ---------- */
+
+const ROLE_STYLE: Record<string, string> = {
+  主公: 'bg-amber-500 text-black', 地主: 'bg-amber-500 text-black',
+  忠臣: 'bg-emerald-600 text-white', 农民: 'bg-emerald-600 text-white',
+  反贼: 'bg-red-700 text-white', 内奸: 'bg-violet-700 text-white',
+  红队: 'bg-red-700 text-white', 蓝队: 'bg-sky-700 text-white',
+};
+
+function RoleBadge({ role }: { role: string }) {
+  return <span className={`px-1.5 rounded text-[10px] font-bold leading-4 ${ROLE_STYLE[role] ?? 'bg-stone-600 text-white'}`}>{role}</span>;
+}
+
 export default function Page() {
   const clientRef = useRef<NonameClient | null>(null);
   const [connected, setConnected] = useState(false);
@@ -93,6 +108,7 @@ export default function Page() {
   const [room, setRoom] = useState<RoomState | null>(null);
   const [game, setGame] = useState<GameState | null>(null);
   const [hand, setHand] = useState<Card[]>([]);
+  const [identity, setIdentity] = useState<{ role: string | null; visible: { seat: number; role: string }[] }>({ role: null, visible: [] });
   const [logs, setLogs] = useState<string[]>([]);
   const [chat, setChat] = useState<{ from: string; text: string }[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -118,7 +134,10 @@ export default function Page() {
         case 'game.log': setLogs(prev => [...prev.slice(-80), e.d.text]); break;
         case 'game.start':
         case 'game.state': setGame(e.d); break;
-        case 'game.state.private': setHand(e.d.hand); break;
+        case 'game.state.private':
+          setHand(e.d.hand);
+          setIdentity({ role: e.d.role ?? null, visible: e.d.visibleRoles ?? [] });
+          break;
         case 'game.over': setGame((g: any) => ({ ...g, phase: 'over', winner: e.d.winner })); break;
         case 'room.kicked': setRoom(null); setGame(null); setHand([]); break;
       }
@@ -256,7 +275,7 @@ export default function Page() {
               <div key={r.id} className="flex items-center justify-between rounded-lg border border-stone-700/80 bg-stone-900/80 px-4 py-3 backdrop-blur">
                 <div>
                   <p className="text-stone-200 font-bold">{r.name}</p>
-                  <p className="text-stone-500 text-xs">{r.game} · {r.players}/{r.max} 人 · {r.started ? (r.over ? '已结束' : '对局中') : '等待中'}</p>
+                  <p className="text-stone-500 text-xs">{r.mode ? `【${r.mode}】` : ''}{r.players}/{r.max} 人 · {r.started ? (r.over ? '已结束' : '对局中') : '等待中'}</p>
                 </div>
                 <Button size="sm" variant="outline" className="border-amber-700 text-amber-400" disabled={r.started && !r.over}
                   onClick={async () => { try { await api('room.join', { roomId: r.id }); } catch {} }}>
@@ -278,7 +297,13 @@ export default function Page() {
         <div className="absolute inset-0 bg-[url('/noname-assets/bg-noname.jpg')] bg-cover bg-center opacity-20" />
         <div className="relative max-w-xl mx-auto px-4 py-10">
           <h1 className="text-2xl font-serif font-bold text-amber-500 tracking-widest mb-1">{room.name}</h1>
-          <p className="text-stone-500 text-sm mb-6">{room.game} · {room.members.length} 人</p>
+          <p className="text-stone-500 text-sm mb-1">
+            {room.game} · {room.members.length} 人 · <span className={room.modeUnavailable ? 'text-red-400' : 'text-amber-400'}>模式：{room.mode}</span>
+          </p>
+          <p className="text-stone-600 text-xs mb-6">2 人 1v1 · 3 人斗地主 · 4 人 2v2 · 8 人军争身份场</p>
+          {room.modeUnavailable && room.members.length >= 5 && room.members.length <= 7 && (
+            <p className="text-red-400 text-xs mb-4">⚠ {room.members.length} 人暂无对应模式，{room.members.length < 8 ? '再等 ' + (8 - room.members.length) + ' 人或调整人数' : ''}</p>
+          )}
           <div className="space-y-2 mb-6">
             {room.members.map(m => (
               <div key={m.id} className="flex items-center justify-between rounded-lg border border-stone-700/80 bg-stone-900/80 px-4 py-3">
@@ -302,6 +327,10 @@ export default function Page() {
 
   /* ================= 对局（原版布局） ================= */
   const over = game.phase === 'over';
+  const roleBadge = (seat: number, p: PlayerBrief) => {
+    const vis = over ? p.role : identity.visible.find(v => v.seat === seat)?.role;
+    return vis ? <RoleBadge role={vis} /> : null;
+  };
   return (
     <main className="fixed inset-0 overflow-hidden bg-stone-950 select-none">
       {/* 背景 */}
@@ -374,6 +403,7 @@ export default function Page() {
             <span className={`mt-1 px-1.5 rounded text-[10px] md:text-xs ${isTurn ? 'bg-amber-500 text-black font-bold' : 'bg-black/60 text-stone-300'}`}>
               {p.name}
             </span>
+            {roleBadge(p.seat, p)}
             <div className="mt-0.5"><HpGems hp={p.hp} maxHp={p.maxHp} /></div>
             <span className="text-[10px] text-stone-400 mt-0.5">
               手牌 {p.handCount}{!p.dead && p.seat !== mySeat ? ` · 距离${p.dist}` : ''}
@@ -397,6 +427,7 @@ export default function Page() {
             {mySelf.name.slice(0, 1)}
           </div>
           <span className="mt-1 px-1.5 rounded text-xs bg-black/60 text-amber-300">{mySelf.name}（你）</span>
+          {identity.role && <RoleBadge role={identity.role} />}
           <div className="mt-1"><HpGems hp={mySelf.hp} maxHp={mySelf.maxHp} /></div>
           <div className="mt-1 flex flex-col gap-0.5">
             {mySelf.equip.map(e => (
@@ -411,8 +442,8 @@ export default function Page() {
       {/* 当前回合阶段提示（顶部中央） */}
       {!over && turnPlayer && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 text-xs text-stone-300 bg-black/50 rounded-full px-4 py-1 border border-stone-700/60">
-          {isMyTurn ? <span className="text-amber-400 font-bold">你的回合 · {PHASE_LABEL[game.turnPhase]}</span>
-            : <>{turnPlayer.name} 的回合 · {PHASE_LABEL[game.turnPhase]}</>}
+          {isMyTurn ? <span className="text-amber-400 font-bold">{game.modeName ? `【${game.modeName}】` : ''}你的回合 · {PHASE_LABEL[game.turnPhase]}</span>
+            : <>{game.modeName ? `【${game.modeName}】` : ''}{turnPlayer.name} 的回合 · {PHASE_LABEL[game.turnPhase]}</>}
         </div>
       )}
 

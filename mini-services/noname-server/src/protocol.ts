@@ -95,6 +95,8 @@ export interface PlayerBrief {
   /** 距当前回合行动者的环上距离（含坐骑修正后） */
   dist: number;
   equip: EquipView[];
+  /** 身份名。公开广播仅在对局结束后填充；对局中的可见身份走 private 的 visibleRoles */
+  role?: string | null;
 }
 
 export type TurnPhase =
@@ -127,12 +129,15 @@ export interface PublicGameState {
   deckCount: number;
   discardCount: number;
   winner: string | null;
+  /** 模式名（如「军争八人身份场」） */
+  modeName: string | null;
 }
 
 export interface RoomSummary {
   id: string;
   name: string;
   game: string;
+  mode: string;
   players: number;
   max: number;
   started: boolean;
@@ -143,6 +148,8 @@ export interface RoomState {
   id: string;
   name: string;
   game: string;
+  mode: string;
+  modeUnavailable: boolean;
   members: { id: string; name: string; ready: boolean }[];
   started: boolean;
   over: boolean;
