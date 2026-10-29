@@ -178,19 +178,33 @@ export default function Page() {
     setChatInput('');
   };
 
+  // 操作防重入：请求未返回前按钮不可再触发（服务端另有 opId 幂等兜底）
+  const actionBusy = useRef(false);
+
   const playSelected = async () => {
-    if (!selected) return;
+    if (!selected || actionBusy.current) return;
+    actionBusy.current = true;
     try { await api('game.action', { type: 'play', data: { cardId: selected.cardId, targetSeat: selected.targetSeat } }); }
     catch {}
+    actionBusy.current = false;
     setSelected(null);
   };
 
   const respond = async (cardId: number | null) => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
     try { await api('game.action', { type: 'respond', data: { cardId } }); } catch {}
+    actionBusy.current = false;
     setRespondCard(null);
   };
 
-  const endTurn = async () => { setSelected(null); try { await api('game.action', { type: 'end' }); } catch {} };
+  const endTurn = async () => {
+    if (actionBusy.current) return;
+    actionBusy.current = true;
+    setSelected(null);
+    try { await api('game.action', { type: 'end' }); } catch {}
+    actionBusy.current = false;
+  };
 
   const canPlayNow = (card: Card) => {
     if (!isMyTurn) return false;

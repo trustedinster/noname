@@ -56,12 +56,14 @@ export class NonameClient {
     return this.socket?.connected ?? false;
   }
 
-  request(t: string, d?: unknown): Promise<any> {
+  request(t: string, d?: unknown, opId?: string): Promise<any> {
     return new Promise((res, rej) => {
       if (!this.socket?.connected) return rej(new Error("未连接"));
       const seq = ++this.seq;
+      // 幂等键：客户端为每次操作生成唯一 id；重试/重放复用同一 opId，服务端去重
+      const oid = opId ?? (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${seq}-${Math.random()}`);
       this.pending.set(seq, { res, rej });
-      this.socket.emit("msg", { t, seq, d });
+      this.socket.emit("msg", { t, seq, opId: oid, d });
     });
   }
 

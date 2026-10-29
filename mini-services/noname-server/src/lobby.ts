@@ -134,6 +134,11 @@ export class Lobby {
       if (!player) socket.disconnect(true);
     }, LIMITS.helloTimeoutMs);
 
+    // 幂等层：opId → 首次执行结果。重复 opId 不再执行，把结果套当前 seq 重放。
+    // 场景：双击 / 网络重试 / 断线重连后的操作重放。容量上限防内存膨胀。
+    const seenOps = new Map<string, { ok: boolean; d: unknown }>();
+    const OP_CAP = 512;
+
     socket.on("msg", (raw: unknown) => {
       if (typeof raw === "string" && raw.length > LIMITS.maxMessageBytes) {
         socket.disconnect(true);
@@ -145,6 +150,25 @@ export class Lobby {
         return;
       }
 
+      const opId = typeof msg.opId === "string" && msg.opId ? msg.opId.slice(0, 64) : null;
+      if (opId) {
+        const seen = seenOps.get(opId);
+        if (seen) {
+          // 重放首次结果，seq 用当前请求的（客户端按 seq 关联才能收到）
+          if (msg.seq != null) socket.emit("ack", { seq: msg.seq, ok: seen.ok, d: seen.d });
+          return;
+        }
+        if (seenOps.size >= OP_CAP) {
+          const first = seenOps.keys().next().value;
+          if (first !== undefined) seenOps.delete(first);
+        }
+      }
+      // 带 seq 的 ack 统一经此出口，opId 在执行前登记（执行中重复请求也被拦截）
+      const ack = (ok: boolean, d: unknown) => {
+        if (opId) seenOps.set(opId, { ok, d });
+        if (msg.seq != null) socket.emit("ack", { seq: msg.seq, ok, d });
+      };
+
       try {
         switch (msg.t) {
           case "hello": {
@@ -152,13 +176,13 @@ export class Lobby {
             player = { id: socket.id, name, socket, roomId: null };
             this.players.set(socket.id, player);
             clearTimeout(helloTimer);
-            socket.emit("ack", { seq: msg.seq, ok: true, d: { id: socket.id, name, serverVersion: APP_VERSION } });
+            ack(true, { id: socket.id, name, serverVersion: APP_VERSION });
             socket.emit("evt", { t: "lobby.state", d: { rooms: this.roomSummaries(), online: this.players.size } });
             break;
           }
           case "lobby.refresh": {
             const d = { rooms: this.roomSummaries(), online: this.players.size };
-            socket.emit("ack", { seq: msg.seq, ok: true, d });
+            ack(true, d);
             socket.emit("evt", { t: "lobby.state", d });
             break;
           }
@@ -170,7 +194,7 @@ export class Lobby {
             this.rooms.set(room.id, room);
             room.join({ id: player.id, name: player.name, ready: false, socket });
             player.roomId = room.id;
-            socket.emit("ack", { seq: msg.seq, ok: true, d: { roomId: room.id } });
+            ack(true, { roomId: room.id });
             socket.emit("evt", { t: "room.joined", d: room.roomState() });
             break;
           }
@@ -180,7 +204,7 @@ export class Lobby {
             if (!room) throw new Error("no-such-room");
             room.join({ id: player.id, name: player.name, ready: false, socket });
             player.roomId = room.id;
-            socket.emit("ack", { seq: msg.seq, ok: true });
+            ack(true, null);
             socket.emit("evt", { t: "room.joined", d: room.roomState() });
             break;
           }
@@ -189,12 +213,12 @@ export class Lobby {
               this.rooms.get(player.roomId)?.leave(player.id);
               player.roomId = null;
             }
-            socket.emit("ack", { seq: msg.seq, ok: true });
+            ack(true, null);
             break;
           }
           case "room.ready": {
             if (player?.roomId) this.rooms.get(player.roomId)?.setReady(player.id, !!msg.d?.ready);
-            socket.emit("ack", { seq: msg.seq, ok: true });
+            ack(true, null);
             break;
           }
           case "room.chat": {
@@ -203,28 +227,24 @@ export class Lobby {
               const m = room?.members.get(player.id);
               if (room && m) room.chat(m, String(msg.d?.text ?? "").slice(0, LIMITS.chat));
             }
-            socket.emit("ack", { seq: msg.seq, ok: true });
+            ack(true, null);
             break;
           }
           case "game.action": {
             if (player?.roomId) this.rooms.get(player.roomId)?.handleGameAction(player.id, msg.d);
-            socket.emit("ack", { seq: msg.seq, ok: true });
+            ack(true, null);
             break;
           }
           case "ping": {
-            socket.emit("ack", { seq: msg.seq, ok: true, d: { ts: Date.now() } });
+            ack(true, { ts: Date.now() });
             break;
           }
           default: {
-            socket.emit("ack", { seq: msg.seq, ok: false, d: { code: "unknown-type" } });
+            ack(false, { code: "unknown-type" });
           }
         }
       } catch (e) {
-        socket.emit("ack", {
-          seq: msg.seq,
-          ok: false,
-          d: { code: e instanceof Error ? e.message : "error", message: e instanceof Error ? e.message : "服务端错误" },
-        });
+        ack(false, { code: e instanceof Error ? e.message : "error", message: e instanceof Error ? e.message : "服务端错误" });
       }
     });
 
@@ -238,13 +258,14 @@ export class Lobby {
     });
   }
 
-  private decode(raw: unknown): { t: string; seq?: number; d?: Record<string, unknown> } | null {
+  private decode(raw: unknown): { t: string; seq?: number; opId?: string; d?: Record<string, unknown> } | null {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
     const msg = raw as Record<string, unknown>;
     if (typeof msg.t !== "string") return null;
     if (msg.seq !== undefined && typeof msg.seq !== "number") return null;
+    if (msg.opId !== undefined && typeof msg.opId !== "string") return null;
     if (msg.d !== undefined && (typeof msg.d !== "object" || msg.d === null)) return null;
-    return msg as { t: string; seq?: number; d?: Record<string, unknown> };
+    return msg as { t: string; seq?: number; opId?: string; d?: Record<string, unknown> };
   }
 
   roomSummaries(): RoomSummary[] {
